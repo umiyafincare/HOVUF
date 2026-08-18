@@ -165,6 +165,41 @@ class DataManager:
             DataManager.save_df("Invoices_Archive", df)
 
     @staticmethod
+    def sync_customer_record(cust_name, cust_phone, service_name, remarks=""):
+        """Automatically adds or updates client directory when bill is created"""
+        clean_phone = str(cust_phone).strip()
+        if not clean_phone or not cust_name:
+            return
+        df_c = DataManager.get_df("Customers")
+        if df_c.empty or "Mobile Number" not in df_c:
+            DataManager.append_row("Customers", {
+                "Created Date": datetime.now().strftime("%Y-%m-%d"),
+                "Customer Name": cust_name.strip(),
+                "Mobile Number": clean_phone,
+                "City/Address": "Kadi",
+                "Primary Service / Purpose": service_name,
+                "Notes": remarks
+            })
+        else:
+            matching_idx = df_c.index[df_c["Mobile Number"].astype(str).str.strip() == clean_phone].tolist()
+            if not matching_idx:
+                DataManager.append_row("Customers", {
+                    "Created Date": datetime.now().strftime("%Y-%m-%d"),
+                    "Customer Name": cust_name.strip(),
+                    "Mobile Number": clean_phone,
+                    "City/Address": "Kadi",
+                    "Primary Service / Purpose": service_name,
+                    "Notes": remarks
+                })
+            else:
+                # Update latest activity
+                c_id = df_c.at[matching_idx[0], "ID"]
+                DataManager.update_row("Customers", c_id, {
+                    "Customer Name": cust_name.strip(),
+                    "Primary Service / Purpose": service_name
+                })
+
+    @staticmethod
     def get_pin():
         df_set = DataManager.get_df("Settings")
         if not df_set.empty and "Key" in df_set and "Value" in df_set:
@@ -314,18 +349,38 @@ SERVICE_OPTIONS = [
     "AIR TICKET", "OTHER"
 ]
 
-def get_customer_pending_due(phone_number):
-    if not phone_number:
-        return 0.0, []
-    df_baki = DataManager.get_df("Udhar_Baki")
-    if df_baki.empty:
-        return 0.0, []
-    mob_col = "Mobile Number" if "Mobile Number" in df_baki else "Mobile"
-    baki_col = "Pending Amount" if "Pending Amount" in df_baki else "Amount"
-    clean_p = str(phone_number).strip()
-    cust_dues = df_baki[(df_baki[mob_col].astype(str).str.strip() == clean_p) & (df_baki[baki_col] > 0)]
-    total_due = cust_dues[baki_col].sum() if not cust_dues.empty else 0.0
-    return float(total_due), cust_dues
+def search_customer_profile(search_text):
+    """Searches customer profile and matches pending dues across database"""
+    if not search_text:
+        return None, 0.0, []
+    clean_q = str(search_text).strip()
+    df_c = DataManager.get_df("Customers")
+    df_b = DataManager.get_df("Udhar_Baki")
+    
+    matched_cust = None
+    if not df_c.empty:
+        m_phone = df_c[df_c["Mobile Number"].astype(str).str.strip() == clean_q]
+        if not m_phone.empty:
+            matched_cust = m_phone.iloc[0]
+        else:
+            m_name = df_c[df_c["Customer Name"].astype(str).str.lower() == clean_q.lower()]
+            if not m_name.empty:
+                matched_cust = m_name.iloc[0]
+                
+    # Search Pending Dues
+    total_due = 0.0
+    due_records = []
+    if not df_b.empty and "Pending Amount" in df_b:
+        m_due = df_b[
+            (df_b["Mobile Number"].astype(str).str.strip() == clean_q) |
+            (df_b["Customer Name"].astype(str).str.lower() == clean_q.lower())
+        ]
+        active_dues = m_due[m_due["Pending Amount"] > 0]
+        if not active_dues.empty:
+            total_due = float(active_dues["Pending Amount"].sum())
+            due_records = active_dues
+            
+    return matched_cust, total_due, due_records
 
 def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, service_1, amt_1, service_2, amt_2, total_bill, rec_amt, baki_amt, pay_mode, remarks):
     buf = io.BytesIO()
@@ -495,7 +550,7 @@ elif menu == "⏰ Task Reminders":
         if not df_rem.empty:
             st.dataframe(df_rem[df_rem["Status"] == "Completed"], use_container_width=True)
 
-# ----------------- 3. INVOICE GENERATION & EDIT / DELETE WITH PIN -----------------
+# ----------------- 3. INVOICE GENERATION (WITH INSTANT LIVE LOOKUP & AUTO-CUSTOMER ADD) -----------------
 elif menu == "🧾 Generate Bill / Voucher":
     st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers")
     bill_type = st.radio("Select Action:", [
@@ -507,18 +562,74 @@ elif menu == "🧾 Generate Bill / Voucher":
         "Settle Old Pending Due"
     ], horizontal=True)
     
-    # --- 1. NEW CUSTOMER INVOICE ---
+    # --- 1. NEW CUSTOMER INVOICE WITH LIVE SEARCH & AUTO-REGISTER ---
     if bill_type == "Customer Invoice (Income)":
-        c1, c2 = st.columns(2)
-        c_name = c1.text_input("Customer Name *")
-        c_phone = c2.text_input("Mobile Number *")
+        st.markdown("### 🔍 STEP 1: Quick Customer Lookup & Live Due Detection")
+        
+        df_all_cust = DataManager.get_df("Customers")
+        col_s_opt1, col_s_opt2 = st.columns([1.5, 2.5])
+        
+        selected_from_list = None
+        if not df_all_cust.empty:
+            cust_quick_list = ["-- Quick Choose Registered Client (Optional) --"] + [
+                f"{r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) - {r.get('Primary Service / Purpose', '')}" 
+                for _, r in df_all_cust.iterrows()
+            ]
+            chosen_c = col_s_opt1.selectbox("Search from Directory:", cust_quick_list)
+            if chosen_c != "-- Quick Choose Registered Client (Optional) --":
+                c_idx = cust_quick_list.index(chosen_c) - 1
+                selected_from_list = df_all_cust.iloc[c_idx]
+
+        init_name = str(selected_from_list.get("Customer Name", "")) if selected_from_list is not None else ""
+        init_phone = str(selected_from_list.get("Mobile Number", "")) if selected_from_list is not None else ""
+        init_service = str(selected_from_list.get("Primary Service / Purpose", "VISA")) if selected_from_list is not None else "VISA"
+        
+        col_c1, col_c2 = st.columns(2)
+        cust_name = col_c1.text_input("Customer Name *", value=init_name)
+        cust_phone = col_c2.text_input("Mobile Number (10 Digits) *", value=init_phone)
+        
+        # --- LIVE DATABASE MATCH & DUE DETECTION ---
+        search_term = cust_phone if cust_phone else cust_name
+        if search_term:
+            matched_profile, live_due, due_records = search_customer_profile(search_term)
+            
+            if matched_profile is not None or live_due > 0:
+                st.markdown(f"""
+                    <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin: 10px 0;">
+                        <h4 style="color: #15803D; margin: 0;">✅ Client Match Found in Database: {matched_profile.get('Customer Name') if matched_profile is not None else cust_name}</h4>
+                        <p style="margin: 3px 0 0 0; font-size: 13px; color: #334155;">
+                            📞 Mobile: <b>{matched_profile.get('Mobile Number') if matched_profile is not None else cust_phone}</b> | 
+                            📍 City: <b>{matched_profile.get('City/Address', 'Kadi') if matched_profile is not None else 'Kadi'}</b> | 
+                            💼 Previous Service: <b>{matched_profile.get('Primary Service / Purpose', 'General') if matched_profile is not None else 'General'}</b>
+                        </p>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("ℹ️ New Client: Details will be **automatically added to Customer Directory** upon bill generation.")
+
+            # Live Due Balance Alert Box
+            if live_due > 0:
+                st.markdown(f"""
+                    <div style="background: #FEF2F2; border-left: 5px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 8px 0 15px 0;">
+                        <h4 style="color: #B91C1C; margin: 0;">⚠️ Outstanding Pending Due Alert: ₹ {live_due:,.2f}</h4>
+                        <p style="margin: 2px 0 0 0; font-size: 13px; color: #7F1D1D;">This customer has an existing unpaid balance from previous services.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                with st.expander("🔎 View Previous Unpaid Dues Breakdown"):
+                    st.dataframe(due_records[["Date", "Service Details", "Total Amount", "Paid Amount", "Pending Amount", "Due Date"]], use_container_width=True)
+            else:
+                st.success("✨ Outstanding Account Status: Clear (No Pending Dues).")
+
+        st.markdown("---")
+        st.markdown("### 🧾 STEP 2: Bill & Service Particulars")
         
         c3, c4 = st.columns(2)
         bill_no = c3.text_input("Invoice No.", f"INV-{datetime.now().strftime('%Y%m%d%H%M')}")
         bill_date = c4.date_input("Invoice Date", datetime.now()).strftime("%Y-%m-%d")
         
         c5, c6 = st.columns(2)
-        s1_sel = c5.selectbox("Select Service 1 *", SERVICE_OPTIONS)
+        default_s_idx = SERVICE_OPTIONS.index(init_service) if init_service in SERVICE_OPTIONS else 0
+        s1_sel = c5.selectbox("Select Service 1 *", SERVICE_OPTIONS, index=default_s_idx)
         s1 = c5.text_input("Custom Service Name *") if s1_sel == "OTHER" else s1_sel
         amt1 = c6.number_input("Amount 1 (₹) *", min_value=0.0, step=100.0)
         
@@ -528,37 +639,55 @@ elif menu == "🧾 Generate Bill / Voucher":
         amt2 = c8.number_input("Amount 2 (₹)", min_value=0.0, step=100.0)
         
         total_bill = amt1 + amt2
-        st.write(f"### **Total Bill: ₹ {total_bill:,.2f}**")
+        st.write(f"### **Total Current Bill: ₹ {total_bill:,.2f}**")
         
         cp1, cp2, cp3 = st.columns(3)
         pay_mode = cp1.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque", "Pending / Due"])
         rec_amt = cp2.number_input("Received Amount (₹)", min_value=0.0, max_value=float(total_bill), value=float(total_bill) if pay_mode != "Pending / Due" else 0.0, step=100.0)
-        due_date = cp3.date_input("Due Date", datetime.now()).strftime("%Y-%m-%d")
+        due_date = cp3.date_input("Due Date (If balance pending)", datetime.now()).strftime("%Y-%m-%d")
         baki_amt = total_bill - rec_amt
-        remarks = st.text_input("Remarks", "Thank you for your business!")
+        item_desc = s1 + (f" + {s2}" if s2 else "")
+        
+        if baki_amt > 0:
+            st.warning(f"⚠️ Balance Due on this Bill: ₹ {baki_amt:,.2f} for '{item_desc}' (Will be logged under Due Collections)")
+            
+        remarks = st.text_input("Remarks / Notes", "Thank you for choosing our services!")
 
-        if st.button("💾 Save Bill & Export PDF", type="primary", use_container_width=True):
-            if c_name and total_bill > 0 and s1:
-                item_desc = s1 + (f" + {s2}" if s2 else "")
+        if st.button("💾 Generate Bill, Save & Export PDF", type="primary", use_container_width=True):
+            if cust_name and total_bill > 0 and s1:
+                # 1. AUTO-SAVE / UPDATE TO CUSTOMERS DIRECTORY
+                DataManager.sync_customer_record(cust_name, cust_phone, s1, remarks)
+                
+                # 2. SAVE TO INVOICES ARCHIVE
                 DataManager.append_row("Invoices_Archive", {
-                    "Invoice No": bill_no, "Date": bill_date, "Customer Name": c_name,
-                    "Mobile Number": str(c_phone).strip(), "Service 1": s1, "Amount 1": amt1,
+                    "Invoice No": bill_no, "Date": bill_date, "Customer Name": cust_name.strip(),
+                    "Mobile Number": str(cust_phone).strip(), "Service 1": s1, "Amount 1": amt1,
                     "Service 2": s2, "Amount 2": amt2, "Total Amount": total_bill,
                     "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Payment Mode": pay_mode, "Remarks": remarks
                 })
+                
+                # 3. RECORD INCOME IF PAID
                 if rec_amt > 0:
-                    DataManager.append_row("Income", {"Date": bill_date, "Customer/Person": c_name, "Work Details": f"Bill #{bill_no}: {item_desc}", "Amount": rec_amt, "Payment Mode": pay_mode, "Notes": f"Mob: {c_phone}"})
+                    DataManager.append_row("Income", {"Date": bill_date, "Customer/Person": cust_name.strip(), "Work Details": f"Bill #{bill_no}: {item_desc}", "Amount": rec_amt, "Payment Mode": pay_mode, "Notes": f"Mob: {cust_phone}"})
+                
+                # 4. RECORD PENDING DUE IF ANY
                 if baki_amt > 0:
-                    DataManager.append_row("Udhar_Baki", {"Date": bill_date, "Customer Name": c_name, "Mobile Number": str(c_phone).strip(), "Service Details": item_desc, "Total Amount": total_bill, "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Due Date": due_date, "Status": "Pending"})
+                    DataManager.append_row("Udhar_Baki", {"Date": bill_date, "Customer Name": cust_name.strip(), "Mobile Number": str(cust_phone).strip(), "Service Details": item_desc, "Total Amount": total_bill, "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Due Date": due_date, "Status": "Pending"})
                 
-                pdf_data = generate_invoice_pdf_buffer(bill_no, bill_date, c_name, c_phone, s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks)
+                pdf_data = generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks)
                 col_dwn, col_wa = st.columns(2)
-                col_dwn.download_button("📥 Download PDF Invoice", data=pdf_data, file_name=f"Invoice_{c_name}_{bill_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
+                col_dwn.download_button("📥 Download PDF Invoice", data=pdf_data, file_name=f"Invoice_{cust_name}_{bill_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
                 
-                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n👤 *Customer:* {c_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n⚠️ *Pending:* Rs. {baki_amt:,.2f}\n📞 {COMPANY_MOBILE}"
-                wa_url = f"https://wa.me/91{str(c_phone).strip()}?text={urllib.parse.quote(wa_msg)}"
+                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n"
+                if baki_amt > 0:
+                    wa_msg += f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n"
+                wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
+                
+                wa_url = f"https://wa.me/91{str(cust_phone).strip()}?text={urllib.parse.quote(wa_msg)}"
                 col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
-                st.success("Invoice Saved Successfully!")
+                st.success("✅ Bill Created & Customer Automatically Added to Directory!")
+            else:
+                st.error("Please enter customer name, valid service, and bill amount.")
 
     # --- 2. EDIT / DELETE GENERATED INVOICES (PIN PROTECTED) ---
     elif bill_type == "✏️ Edit / Delete Invoices (Requires PIN)":
@@ -773,7 +902,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY -----------------
+# ----------------- 6. CUSTOMERS DIRECTORY (WITH EDIT, ADDRESS & NOTES) -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -912,7 +1041,7 @@ elif menu == "📋 Due Collections":
     if not df_b.empty:
         st.dataframe(df_b, use_container_width=True)
 
-# ----------------- 8. BACKUP & RESTORE DATA (PROTECTS DATA FROM CODE UPDATES) -----------------
+# ----------------- 8. BACKUP & RESTORE DATA -----------------
 elif menu == "💾 Backup & Restore":
     st.subheader("💾 Data Backup & Restore Center")
     st.info("💡 To prevent data loss during code updates, download a backup before updating, and upload it here after updating.")
@@ -936,8 +1065,6 @@ elif menu == "💾 Backup & Restore":
             
     with b_tab2:
         st.markdown("##### 📤 Restore Previous Database File")
-        st.caption("Upload your previously downloaded `Rojmed_Backup.xlsx` or `Backup.xlsx` file here.")
-        
         uploaded_backup = st.file_uploader("Choose Backup Excel File (.xlsx):", type=["xlsx"])
         rest_pin = st.text_input("Enter Master Security PIN to Confirm Restore:", type="password", key="rest_pin_inp")
         
