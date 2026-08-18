@@ -4,7 +4,8 @@ from datetime import datetime, time
 import io
 import pandas as pd
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+import openpyxl
+from openpyxl import Workbook
 
 # ReportLab for PDF Bill & Reports
 from reportlab.lib.pagesizes import A4
@@ -24,6 +25,7 @@ LOGO_FINCARE = "UMIYA FIN.jpg"
 LOGO_INSURANCE = "HARI OM IL.jpg"
 LOGO_PROPERTY = "SHREE UNIYA.jpg"
 
+EXCEL_FILE = "Rojmed_Data.xlsx"
 DEFAULT_PIN = "1234"
 
 # Page Settings
@@ -74,30 +76,48 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Google Sheets Database Connection
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception:
-    conn = None
-
 class DataManager:
     @staticmethod
+    def init_excel():
+        if not os.path.exists(EXCEL_FILE):
+            wb = Workbook()
+            wb.remove(wb.active)
+            sheets = {
+                "Settings": ["Key", "Value", "Updated Date"],
+                "Invoices_Archive": ["Invoice No", "Date", "Customer Name", "Mobile Number", "Service 1", "Amount 1", "Service 2", "Amount 2", "Total Amount", "Paid Amount", "Pending Amount", "Payment Mode", "Remarks"],
+                "Customers": ["ID", "Created Date", "Customer Name", "Mobile Number", "City/Address", "Primary Service / Purpose", "Notes"],
+                "Income": ["ID", "Date", "Customer/Person", "Work Details", "Amount", "Payment Mode", "Notes"],
+                "Expense": ["ID", "Date", "Expense Name", "Amount", "Notes"],
+                "Udhar_Baki": ["ID", "Date", "Customer Name", "Mobile Number", "Service Details", "Total Amount", "Paid Amount", "Pending Amount", "Due Date", "Status"],
+                "Task_Reminder": ["ID", "Date", "Time", "Person Name", "Mobile", "Task Details", "Status"]
+            }
+            for sheet_name, headers in sheets.items():
+                ws = wb.create_sheet(title=sheet_name)
+                ws.append(headers)
+            
+            ws_set = wb["Settings"]
+            ws_set.append(["Cash_Opening_Balance", 0.0, datetime.now().strftime("%Y-%m-%d")])
+            ws_set.append(["Bank_Opening_Balance", 0.0, datetime.now().strftime("%Y-%m-%d")])
+            ws_set.append(["Master_PIN", DEFAULT_PIN, datetime.now().strftime("%Y-%m-%d")])
+            wb.save(EXCEL_FILE)
+
+    @staticmethod
     def get_df(sheet_name):
-        if conn is not None:
-            try:
-                df = conn.read(worksheet=sheet_name, ttl=0)
-                return df.dropna(how="all") if df is not None else pd.DataFrame()
-            except Exception:
-                pass
-        return pd.DataFrame()
+        DataManager.init_excel()
+        try:
+            df = pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
+            return df.dropna(how="all") if df is not None else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
 
     @staticmethod
     def save_df(sheet_name, df):
-        if conn is not None:
-            try:
-                conn.update(worksheet=sheet_name, data=df)
-            except Exception as e:
-                st.error(f"Error saving to Google Sheets: {e}")
+        DataManager.init_excel()
+        try:
+            with pd.ExcelWriter(EXCEL_FILE, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+        except Exception as e:
+            st.error(f"Save error: {e}")
 
     @staticmethod
     def append_row(sheet_name, row_dict):
@@ -151,8 +171,7 @@ class DataManager:
     @staticmethod
     def get_opening_balance():
         df_set = DataManager.get_df("Settings")
-        cash_op = 0.0
-        bank_op = 0.0
+        cash_op, bank_op = 0.0, 0.0
         if not df_set.empty and "Key" in df_set and "Value" in df_set:
             cash_row = df_set[df_set["Key"] == "Cash_Opening_Balance"]
             bank_row = df_set[df_set["Key"] == "Bank_Opening_Balance"]
@@ -164,12 +183,12 @@ class DataManager:
 
     @staticmethod
     def set_opening_balance(cash_op, bank_op):
-        df_set = DataManager.get_df("Settings")
         now_str = datetime.now().strftime("%Y-%m-%d")
         new_records = [
             {"Key": "Cash_Opening_Balance", "Value": float(cash_op), "Updated Date": now_str},
             {"Key": "Bank_Opening_Balance", "Value": float(bank_op), "Updated Date": now_str}
         ]
+        df_set = DataManager.get_df("Settings")
         if df_set.empty or "Key" not in df_set:
             df_set = pd.DataFrame(new_records)
         else:
@@ -215,8 +234,8 @@ if not st.session_state.logged_in:
     with col_c2:
         st.markdown("""
             <div style="background: #FFFFFF; padding: 25px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Cloud Ledger Login</h3>
-                <p style="color: #64748B; font-size: 13px;">Connected with 100% Secure Google Cloud Database.</p>
+                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Secure Ledger Login</h3>
+                <p style="color: #64748B; font-size: 13px;">Enter 4-Digit Security PIN to access accounting ledger.</p>
             </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -225,11 +244,11 @@ if not st.session_state.logged_in:
         if st.button("🔓 Unlock & Login", type="primary", use_container_width=True):
             if entered_pin == DataManager.get_pin():
                 st.session_state.logged_in = True
-                st.success("Access Granted! Loading Cloud Data...")
+                st.success("Access Granted!")
                 st.rerun()
             else:
                 st.error("❌ Invalid PIN! Please try again.")
-        st.caption("Default PIN: `1234` (Stored in Google Sheet Settings).")
+        st.caption(f"Default setup PIN is: `{DEFAULT_PIN}` (Change it in Security settings).")
     st.stop()
 
 render_top_logos()
@@ -261,6 +280,12 @@ for label, desc in menu_items:
 
 menu = st.session_state.current_page
 st.sidebar.markdown("---")
+
+# Download Full Excel Backup
+if os.path.exists(EXCEL_FILE):
+    with open(EXCEL_FILE, "rb") as f:
+        st.sidebar.download_button("📥 Backup All Data (Excel)", data=f, file_name=f"Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
 if st.sidebar.button("🔒 Logout System", use_container_width=True):
     st.session_state.logged_in = False
     st.rerun()
@@ -328,7 +353,7 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
 
 # ----------------- 1. DASHBOARD -----------------
 if menu == "📊 Dashboard":
-    st.subheader("📊 Business Overview (Live Cloud Data)")
+    st.subheader("📊 Business Overview")
     
     df_rem_all = DataManager.get_df("Task_Reminder")
     if not df_rem_all.empty and "Status" in df_rem_all:
@@ -395,7 +420,7 @@ if menu == "📊 Dashboard":
                 b3.write(f"🏷️ *{serv_name}*")
                 b4.write(f"Due: **₹ {r.get('Pending Amount'):,.2f}**")
                 b5.write(f"Date: {r.get('Due Date')}")
-                msg = f"Hello {r.get('Customer Name')}, gentle payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {r.get('Pending Amount'):,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
+                msg = f"Hello {r.get('Customer Name')}, payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {r.get('Pending Amount'):,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
                 wa_url = f"https://wa.me/91{str(r.get('Mobile Number')).strip()}?text={urllib.parse.quote(msg)}"
                 b6.markdown(f"[📲 Send WhatsApp]({wa_url})", unsafe_allow_html=True)
         else:
@@ -418,7 +443,7 @@ elif menu == "⏰ Task Reminders":
             if st.form_submit_button("💾 Save Reminder", use_container_width=True):
                 if tdesc and pname:
                     DataManager.append_row("Task_Reminder", {"Date": rdate, "Time": rtime, "Person Name": pname, "Mobile": rphone, "Task Details": tdesc, "Status": "Pending"})
-                    st.success("Reminder Saved to Cloud!")
+                    st.success("Reminder Saved!")
                     st.rerun()
 
     with tab_pending_tasks:
@@ -446,7 +471,6 @@ elif menu == "🧾 Generate Bill / Voucher":
     bill_type = st.radio("Select Action:", ["Customer Invoice (Income)", "🖨️ Re-Print Old Invoice", "Payment Voucher (Expense)", "Settle Old Pending Due"], horizontal=True)
     
     if bill_type == "Customer Invoice (Income)":
-        df_cust = DataManager.get_df("Customers")
         c1, c2 = st.columns(2)
         c_name = c1.text_input("Customer Name *")
         c_phone = c2.text_input("Mobile Number *")
@@ -475,7 +499,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         baki_amt = total_bill - rec_amt
         remarks = st.text_input("Remarks", "Thank you for your business!")
 
-        if st.button("💾 Save Bill to Cloud & Export PDF", type="primary", use_container_width=True):
+        if st.button("💾 Save Bill & Export PDF", type="primary", use_container_width=True):
             if c_name and total_bill > 0 and s1:
                 item_desc = s1 + (f" + {s2}" if s2 else "")
                 DataManager.append_row("Invoices_Archive", {
@@ -496,7 +520,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n👤 *Customer:* {c_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n⚠️ *Pending:* Rs. {baki_amt:,.2f}\n📞 {COMPANY_MOBILE}"
                 wa_url = f"https://wa.me/91{str(c_phone).strip()}?text={urllib.parse.quote(wa_msg)}"
                 col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
-                st.success("Invoice Saved to Google Sheet!")
+                st.success("Invoice Saved Successfully!")
 
     elif bill_type == "🖨️ Re-Print Old Invoice":
         df_arch = DataManager.get_df("Invoices_Archive")
@@ -515,7 +539,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         p_amt = c2.number_input("Amount (₹) *", min_value=0.0, step=50.0)
         p_mode = c1.selectbox("Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
         p_desc = c2.text_input("Expense Purpose *")
-        if st.button("💾 Save Expense to Cloud", type="primary", use_container_width=True):
+        if st.button("💾 Save Expense", type="primary", use_container_width=True):
             if p_name and p_amt > 0:
                 DataManager.append_row("Expense", {"Date": v_date, "Expense Name": f"{p_name} ({p_desc})", "Amount": p_amt, "Notes": f"VOU #{v_no} | {p_mode}"})
                 st.success("Expense Recorded!")
@@ -540,7 +564,7 @@ elif menu == "🧾 Generate Bill / Voucher":
 
 # ----------------- 4. REPORTS & PDF -----------------
 elif menu == "📄 Reports & PDF":
-    st.subheader("📄 Financial Reports (Google Cloud)")
+    st.subheader("📄 Financial Reports")
     c1, c2 = st.columns(2)
     d_from = c1.date_input("From Date", datetime.now().replace(day=1)).strftime("%Y-%m-%d")
     d_to = c2.date_input("To Date", datetime.now()).strftime("%Y-%m-%d")
@@ -576,10 +600,10 @@ elif menu == "🏦 Opening Balance":
     in_c = c1.number_input("Cash in Hand (₹)", value=float(curr_c), step=500.0)
     in_b = c2.number_input("Bank Balance (₹)", value=float(curr_b), step=500.0)
     pin = st.text_input("Enter Security PIN to Save:", type="password")
-    if st.button("💾 Save Opening Balance to Cloud", type="primary", use_container_width=True):
+    if st.button("💾 Save Opening Balance", type="primary", use_container_width=True):
         if pin == DataManager.get_pin():
             DataManager.set_opening_balance(in_c, in_b)
-            st.success("Opening Balance Saved to Google Sheet!")
+            st.success("Opening Balance Saved!")
             st.rerun()
         else:
             st.error("Invalid PIN!")
@@ -633,7 +657,7 @@ elif menu == "⚙️ Security / Change PIN":
             if old_p == DataManager.get_pin():
                 if new_p and new_p == conf_p:
                     DataManager.set_pin(new_p)
-                    st.success("PIN Updated in Google Sheets!")
+                    st.success("PIN Updated!")
                 else:
                     st.error("PIN mismatch!")
             else:
