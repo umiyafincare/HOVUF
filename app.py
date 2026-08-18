@@ -148,6 +148,23 @@ class DataManager:
                 DataManager.save_df(sheet_name, df)
 
     @staticmethod
+    def update_invoice_archive(invoice_no, updated_dict):
+        df = DataManager.get_df("Invoices_Archive")
+        if not df.empty and "Invoice No" in df:
+            idx = df.index[df["Invoice No"].astype(str) == str(invoice_no)].tolist()
+            if idx:
+                for k, v in updated_dict.items():
+                    df.at[idx[0], k] = v
+                DataManager.save_df("Invoices_Archive", df)
+
+    @staticmethod
+    def delete_invoice_archive(invoice_no):
+        df = DataManager.get_df("Invoices_Archive")
+        if not df.empty and "Invoice No" in df:
+            df = df[df["Invoice No"].astype(str) != str(invoice_no)]
+            DataManager.save_df("Invoices_Archive", df)
+
+    @staticmethod
     def get_pin():
         df_set = DataManager.get_df("Settings")
         if not df_set.empty and "Key" in df_set and "Value" in df_set:
@@ -261,13 +278,14 @@ st.sidebar.markdown("<h4 style='color:#1E3A8A;'>📌 Navigation Menu</h4>", unsa
 menu_items = [
     ("📊 Dashboard", "Business metrics & live summary"),
     ("⏰ Task Reminders", "Calendar & Clock Reminders"),
-    ("🧾 Generate Bill / Voucher", "Create & Print Invoices"),
+    ("🧾 Generate Bill / Voucher", "Create, Edit, Print Invoices & Vouchers"),
     ("📄 Reports & PDF", "Statements & Reports"),
     ("🏦 Opening Balance", "Set Starting Balances"),
-    ("👥 Customers Directory", "Manage Clients, Address, Notes & Broadcasts"),
+    ("👥 Customers Directory", "Manage Clients & Broadcasts"),
     ("💰 Income", "View & Manage Income"),
     ("💸 Expenses", "View & Manage Expenses"),
     ("📋 Due Collections", "Customer Pending Dues"),
+    ("💾 Backup & Restore", "Download or Restore Previous Data"),
     ("⚙️ Security / Change PIN", "Change Master PIN")
 ]
 
@@ -283,7 +301,7 @@ st.sidebar.markdown("---")
 
 if os.path.exists(EXCEL_FILE):
     with open(EXCEL_FILE, "rb") as f:
-        st.sidebar.download_button("📥 Backup All Data (Excel)", data=f, file_name=f"Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.sidebar.download_button("📥 Quick Backup (Excel)", data=f, file_name=f"Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 if st.sidebar.button("🔒 Logout System", use_container_width=True):
     st.session_state.logged_in = False
@@ -295,6 +313,19 @@ SERVICE_OPTIONS = [
     "PROVIDENT FUND (PF)", "REVENUE WORK", "MARRIAGE CERTIFICATE", "INSURANCE",
     "AIR TICKET", "OTHER"
 ]
+
+def get_customer_pending_due(phone_number):
+    if not phone_number:
+        return 0.0, []
+    df_baki = DataManager.get_df("Udhar_Baki")
+    if df_baki.empty:
+        return 0.0, []
+    mob_col = "Mobile Number" if "Mobile Number" in df_baki else "Mobile"
+    baki_col = "Pending Amount" if "Pending Amount" in df_baki else "Amount"
+    clean_p = str(phone_number).strip()
+    cust_dues = df_baki[(df_baki[mob_col].astype(str).str.strip() == clean_p) & (df_baki[baki_col] > 0)]
+    total_due = cust_dues[baki_col].sum() if not cust_dues.empty else 0.0
+    return float(total_due), cust_dues
 
 def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, service_1, amt_1, service_2, amt_2, total_bill, rec_amt, baki_amt, pay_mode, remarks):
     buf = io.BytesIO()
@@ -464,11 +495,19 @@ elif menu == "⏰ Task Reminders":
         if not df_rem.empty:
             st.dataframe(df_rem[df_rem["Status"] == "Completed"], use_container_width=True)
 
-# ----------------- 3. INVOICE GENERATION -----------------
+# ----------------- 3. INVOICE GENERATION & EDIT / DELETE WITH PIN -----------------
 elif menu == "🧾 Generate Bill / Voucher":
-    st.subheader("🧾 Generate & Re-Print Invoices")
-    bill_type = st.radio("Select Action:", ["Customer Invoice (Income)", "🖨️ Re-Print Old Invoice", "Payment Voucher (Expense)", "Settle Old Pending Due"], horizontal=True)
+    st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers")
+    bill_type = st.radio("Select Action:", [
+        "Customer Invoice (Income)", 
+        "✏️ Edit / Delete Invoices (Requires PIN)",
+        "🖨️ Re-Print Old Invoice", 
+        "Payment Voucher (Expense)", 
+        "✏️ Edit / Delete Vouchers (Requires PIN)",
+        "Settle Old Pending Due"
+    ], horizontal=True)
     
+    # --- 1. NEW CUSTOMER INVOICE ---
     if bill_type == "Customer Invoice (Income)":
         c1, c2 = st.columns(2)
         c_name = c1.text_input("Customer Name *")
@@ -521,6 +560,80 @@ elif menu == "🧾 Generate Bill / Voucher":
                 col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
                 st.success("Invoice Saved Successfully!")
 
+    # --- 2. EDIT / DELETE GENERATED INVOICES (PIN PROTECTED) ---
+    elif bill_type == "✏️ Edit / Delete Invoices (Requires PIN)":
+        st.markdown("### 🔐 Modify or Delete Existing Invoice Record")
+        df_arch = DataManager.get_df("Invoices_Archive")
+        
+        if not df_arch.empty and "Invoice No" in df_arch:
+            sel_inv_options = [f"{r['Invoice No']} - {r['Customer Name']} ({r['Date']}) | Total: ₹{r['Total Amount']}" for _, r in df_arch.iterrows()]
+            chosen_inv_str = st.selectbox("Select Invoice to Modify / Delete:", sel_inv_options, key="edit_inv_select")
+            
+            if chosen_inv_str:
+                sel_inv_no = chosen_inv_str.split(" - ")[0]
+                inv_row = df_arch[df_arch["Invoice No"] == sel_inv_no].iloc[0]
+                
+                with st.expander(f"📝 Edit Invoice #{sel_inv_no} Details", expanded=True):
+                    ed_c1, ed_c2 = st.columns(2)
+                    up_date = ed_c1.text_input("Invoice Date", str(inv_row.get("Date", "")))
+                    up_cname = ed_c2.text_input("Customer Name", str(inv_row.get("Customer Name", "")))
+                    
+                    ed_c3, ed_c4 = st.columns(2)
+                    up_cphone = ed_c3.text_input("Mobile Number", str(inv_row.get("Mobile Number", "")))
+                    up_s1 = ed_c4.text_input("Service 1", str(inv_row.get("Service 1", "")))
+                    
+                    ed_c5, ed_c6 = st.columns(2)
+                    up_amt1 = ed_c5.number_input("Amount 1 (₹)", value=float(inv_row.get("Amount 1", 0.0)), step=100.0)
+                    up_s2 = ed_c6.text_input("Service 2", str(inv_row.get("Service 2", "")) if pd.notna(inv_row.get("Service 2")) else "")
+                    
+                    ed_c7, ed_c8 = st.columns(2)
+                    up_amt2 = ed_c7.number_input("Amount 2 (₹)", value=float(inv_row.get("Amount 2", 0.0)) if pd.notna(inv_row.get("Amount 2")) else 0.0, step=100.0)
+                    up_mode = ed_c8.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque", "Pending / Due"], index=["Cash", "UPI / GPay", "Bank Transfer", "Cheque", "Pending / Due"].index(inv_row.get("Payment Mode", "Cash")) if inv_row.get("Payment Mode") in ["Cash", "UPI / GPay", "Bank Transfer", "Cheque", "Pending / Due"] else 0)
+                    
+                    up_tot = up_amt1 + up_amt2
+                    ed_c9, ed_c10 = st.columns(2)
+                    up_rec = ed_c9.number_input("Paid Amount (₹)", value=float(inv_row.get("Paid Amount", up_tot)), max_value=float(up_tot), step=100.0)
+                    up_baki = up_tot - up_rec
+                    ed_c10.write(f"**Calculated Balance Due:** ₹ {up_baki:,.2f}")
+                    
+                    up_remarks = st.text_input("Remarks", str(inv_row.get("Remarks", "")) if pd.notna(inv_row.get("Remarks")) else "")
+                    
+                    st.markdown("🔒 **Security Authorization:**")
+                    inv_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"inv_pin_{sel_inv_no}")
+                    
+                    btn_up_col, btn_del_col = st.columns(2)
+                    if btn_up_col.button("🔄 Update Invoice Record", key=f"up_btn_{sel_inv_no}", use_container_width=True):
+                        if inv_auth_pin == DataManager.get_pin():
+                            DataManager.update_invoice_archive(sel_inv_no, {
+                                "Date": up_date,
+                                "Customer Name": up_cname,
+                                "Mobile Number": str(up_cphone).strip(),
+                                "Service 1": up_s1,
+                                "Amount 1": up_amt1,
+                                "Service 2": up_s2,
+                                "Amount 2": up_amt2,
+                                "Total Amount": up_tot,
+                                "Paid Amount": up_rec,
+                                "Pending Amount": up_baki,
+                                "Payment Mode": up_mode,
+                                "Remarks": up_remarks
+                            })
+                            st.success(f"✅ Invoice #{sel_inv_no} updated successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN! Action denied.")
+                            
+                    if btn_del_col.button("🗑️ Delete Invoice Record", key=f"del_btn_{sel_inv_no}", type="primary", use_container_width=True):
+                        if inv_auth_pin == DataManager.get_pin():
+                            DataManager.delete_invoice_archive(sel_inv_no)
+                            st.warning(f"🗑️ Invoice #{sel_inv_no} deleted successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN! Action denied.")
+        else:
+            st.info("No generated invoice records found to edit.")
+
+    # --- 3. RE-PRINT OLD INVOICES ---
     elif bill_type == "🖨️ Re-Print Old Invoice":
         df_arch = DataManager.get_df("Invoices_Archive")
         if not df_arch.empty:
@@ -529,7 +642,10 @@ elif menu == "🧾 Generate Bill / Voucher":
             r = df_arch[df_arch["Invoice No"] == sel_no].iloc[0]
             re_pdf = generate_invoice_pdf_buffer(str(r["Invoice No"]), str(r["Date"]), str(r["Customer Name"]), str(r["Mobile Number"]), str(r.get("Service 1", "")), float(r.get("Amount 1", 0)), str(r.get("Service 2", "")), float(r.get("Amount 2", 0)), float(r["Total Amount"]), float(r.get("Paid Amount", 0)), float(r.get("Pending Amount", 0)), str(r.get("Payment Mode", "")), str(r.get("Remarks", "")))
             st.download_button("🖨️ Re-Download PDF", data=re_pdf, file_name=f"Invoice_{sel_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
+        else:
+            st.info("No invoices found.")
 
+    # --- 4. EXPENSE VOUCHER ---
     elif bill_type == "Payment Voucher (Expense)":
         c1, c2 = st.columns(2)
         v_no = c1.text_input("Voucher No.", f"VOU-{datetime.now().strftime('%Y%m%d%H%M')}")
@@ -543,6 +659,56 @@ elif menu == "🧾 Generate Bill / Voucher":
                 DataManager.append_row("Expense", {"Date": v_date, "Expense Name": f"{p_name} ({p_desc})", "Amount": p_amt, "Notes": f"VOU #{v_no} | {p_mode}"})
                 st.success("Expense Recorded!")
 
+    # --- 5. EDIT / DELETE EXPENSE VOUCHERS (PIN PROTECTED) ---
+    elif bill_type == "✏️ Edit / Delete Vouchers (Requires PIN)":
+        st.markdown("### 🔐 Modify or Delete Payment Voucher Record")
+        df_exp = DataManager.get_df("Expense")
+        
+        if not df_exp.empty:
+            sel_exp_options = [f"ID #{r['ID']} - {r.get('Expense Name', '')} ({r.get('Date', '')}) | ₹{r.get('Amount', 0)}" for _, r in df_exp.iterrows()]
+            chosen_exp_str = st.selectbox("Select Voucher / Expense to Modify:", sel_exp_options, key="edit_exp_select")
+            
+            if chosen_exp_str:
+                sel_exp_id = int(chosen_exp_str.split(" ")[1].replace("#", ""))
+                exp_row = df_exp[df_exp["ID"] == sel_exp_id].iloc[0]
+                
+                with st.expander(f"📝 Edit Expense Voucher #{sel_exp_id}", expanded=True):
+                    up_ed1, up_ed2 = st.columns(2)
+                    up_e_date = up_ed1.text_input("Date", str(exp_row.get("Date", "")), key=f"e_dt_{sel_exp_id}")
+                    up_e_name = up_ed2.text_input("Expense Description / Paid To", str(exp_row.get("Expense Name", "")), key=f"e_nm_{sel_exp_id}")
+                    
+                    up_ed3, up_ed4 = st.columns(2)
+                    up_e_amt = up_ed3.number_input("Amount (₹)", value=float(exp_row.get("Amount", 0.0)), step=50.0, key=f"e_am_{sel_exp_id}")
+                    up_e_notes = up_ed4.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
+                    
+                    st.markdown("🔒 **Security Authorization:**")
+                    exp_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
+                    
+                    eb_up_col, eb_del_col = st.columns(2)
+                    if eb_up_col.button("🔄 Update Voucher", key=f"up_exp_btn_{sel_exp_id}", use_container_width=True):
+                        if exp_auth_pin == DataManager.get_pin():
+                            DataManager.update_row("Expense", sel_exp_id, {
+                                "Date": up_e_date,
+                                "Expense Name": up_e_name,
+                                "Amount": up_e_amt,
+                                "Notes": up_e_notes
+                            })
+                            st.success(f"✅ Voucher #{sel_exp_id} updated successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+                            
+                    if eb_del_col.button("🗑️ Delete Voucher", key=f"del_exp_btn_{sel_exp_id}", type="primary", use_container_width=True):
+                        if exp_auth_pin == DataManager.get_pin():
+                            DataManager.delete_row("Expense", sel_exp_id)
+                            st.warning(f"🗑️ Voucher #{sel_exp_id} deleted successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+        else:
+            st.info("No expense vouchers found to edit.")
+
+    # --- 6. SETTLE OLD PENDING DUE ---
     elif bill_type == "Settle Old Pending Due":
         df_baki = DataManager.get_df("Udhar_Baki")
         if not df_baki.empty:
@@ -607,7 +773,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY (WITH EDIT, ADDRESS & NOTES) -----------------
+# ----------------- 6. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -661,7 +827,6 @@ elif menu == "👥 Customers Directory":
             st.dataframe(filtered_df, use_container_width=True)
             st.divider()
             
-            # --- EDIT & DELETE SECTION ---
             sel_c_options = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')})" for _, r in df_c.iterrows()]
             sel_c_str = st.selectbox("Select Customer to Edit / Update / Delete:", sel_c_options)
             
@@ -709,7 +874,7 @@ elif menu == "👥 Customers Directory":
                         else:
                             st.error("❌ Incorrect Security PIN!")
         else:
-            st.info("No registered clients found. Please add clients using the 'Add Client' tab.")
+            st.info("No registered clients found.")
 
     with tab_promo:
         st.markdown("##### 📢 Bulk Broadcast & Promotion List")
@@ -747,7 +912,48 @@ elif menu == "📋 Due Collections":
     if not df_b.empty:
         st.dataframe(df_b, use_container_width=True)
 
-# ----------------- 8. SECURITY PIN -----------------
+# ----------------- 8. BACKUP & RESTORE DATA (PROTECTS DATA FROM CODE UPDATES) -----------------
+elif menu == "💾 Backup & Restore":
+    st.subheader("💾 Data Backup & Restore Center")
+    st.info("💡 To prevent data loss during code updates, download a backup before updating, and upload it here after updating.")
+    
+    b_tab1, b_tab2 = st.tabs(["📥 Download Current Backup", "📤 Restore / Upload Previous Backup"])
+    
+    with b_tab1:
+        st.markdown("##### 📥 Export All Accounting Data")
+        if os.path.exists(EXCEL_FILE):
+            with open(EXCEL_FILE, "rb") as f:
+                st.download_button(
+                    label="📥 Click to Download Full Database Backup (.xlsx)",
+                    data=f,
+                    file_name=f"Rojmed_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+        else:
+            st.info("No data created yet.")
+            
+    with b_tab2:
+        st.markdown("##### 📤 Restore Previous Database File")
+        st.caption("Upload your previously downloaded `Rojmed_Backup.xlsx` or `Backup.xlsx` file here.")
+        
+        uploaded_backup = st.file_uploader("Choose Backup Excel File (.xlsx):", type=["xlsx"])
+        rest_pin = st.text_input("Enter Master Security PIN to Confirm Restore:", type="password", key="rest_pin_inp")
+        
+        if st.button("🚀 Restore & Overwrite Data", type="primary", use_container_width=True):
+            if rest_pin == DataManager.get_pin():
+                if uploaded_backup is not None:
+                    with open(EXCEL_FILE, "wb") as f:
+                        f.write(uploaded_backup.getbuffer())
+                    st.success("✅ Database successfully restored! All previous records are back.")
+                    st.rerun()
+                else:
+                    st.error("Please select a valid backup excel file to upload.")
+            else:
+                st.error("❌ Incorrect Security PIN! Action denied.")
+
+# ----------------- 9. SECURITY PIN -----------------
 elif menu == "⚙️ Security / Change PIN":
     st.subheader("⚙️ Change Master PIN")
     with st.form("pin_form"):
