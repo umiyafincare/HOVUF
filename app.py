@@ -264,7 +264,7 @@ menu_items = [
     ("🧾 Generate Bill / Voucher", "Create & Print Invoices"),
     ("📄 Reports & PDF", "Statements & Reports"),
     ("🏦 Opening Balance", "Set Starting Balances"),
-    ("👥 Customers Directory", "Manage Clients & Broadcasts"),
+    ("👥 Customers Directory", "Manage Clients, Address, Notes & Broadcasts"),
     ("💰 Income", "View & Manage Income"),
     ("💸 Expenses", "View & Manage Expenses"),
     ("📋 Due Collections", "Customer Pending Dues"),
@@ -281,7 +281,6 @@ for label, desc in menu_items:
 menu = st.session_state.current_page
 st.sidebar.markdown("---")
 
-# Download Full Excel Backup
 if os.path.exists(EXCEL_FILE):
     with open(EXCEL_FILE, "rb") as f:
         st.sidebar.download_button("📥 Backup All Data (Excel)", data=f, file_name=f"Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -608,24 +607,126 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY -----------------
+# ----------------- 6. CUSTOMERS DIRECTORY (WITH EDIT, ADDRESS & NOTES) -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast")
-    tab_new, tab_list = st.tabs(["➕ Add Client", "📋 Registered Clients"])
+    tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
+    
     with tab_new:
-        with st.form("c_form"):
-            cn = st.text_input("Customer Name *")
-            cp = st.text_input("Mobile Number *")
-            cs = st.selectbox("Primary Service", SERVICE_OPTIONS)
-            if st.form_submit_button("💾 Save Client"):
+        with st.form("c_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            cn = c1.text_input("Customer Name *")
+            cp = c2.text_input("Mobile Number (10 Digits) *")
+            
+            c3, c4 = st.columns(2)
+            c_addr = c3.text_input("Address / City / Village", "Kadi")
+            cs = c4.selectbox("Primary Service / Purpose *", SERVICE_OPTIONS)
+            
+            c_notes = st.text_area("Notes / Remarks", placeholder="e.g. Visa inquiry, Land deal, Reference, etc.")
+            
+            if st.form_submit_button("💾 Save Client Profile", use_container_width=True):
                 if cn and cp:
-                    DataManager.append_row("Customers", {"Created Date": datetime.now().strftime("%Y-%m-%d"), "Customer Name": cn, "Mobile Number": cp, "Primary Service / Purpose": cs})
-                    st.success("Client Saved!")
-                    st.rerun()
+                    df_c = DataManager.get_df("Customers")
+                    clean_phone = str(cp).strip()
+                    if not df_c.empty and "Mobile Number" in df_c and clean_phone in df_c["Mobile Number"].astype(str).values:
+                        st.warning(f"⚠️ A customer with mobile {clean_phone} already exists in records!")
+                    else:
+                        DataManager.append_row("Customers", {
+                            "Created Date": datetime.now().strftime("%Y-%m-%d"),
+                            "Customer Name": cn,
+                            "Mobile Number": clean_phone,
+                            "City/Address": c_addr,
+                            "Primary Service / Purpose": cs,
+                            "Notes": c_notes
+                        })
+                        st.success(f"Client '{cn}' saved successfully!")
+                        st.rerun()
+                else:
+                    st.error("Customer name and mobile number are required.")
+                    
     with tab_list:
         df_c = DataManager.get_df("Customers")
         if not df_c.empty:
-            st.dataframe(df_c, use_container_width=True)
+            search_query = st.text_input("🔍 Quick Search by Name, Mobile, Address or Service:", "")
+            if search_query:
+                filtered_df = df_c[
+                    df_c["Customer Name"].astype(str).str.contains(search_query, case=False, na=False) | 
+                    df_c["Mobile Number"].astype(str).str.contains(search_query, case=False, na=False) |
+                    df_c.get("City/Address", pd.Series()).astype(str).str.contains(search_query, case=False, na=False) |
+                    df_c.get("Primary Service / Purpose", pd.Series()).astype(str).str.contains(search_query, case=False, na=False)
+                ]
+            else:
+                filtered_df = df_c
+                
+            st.dataframe(filtered_df, use_container_width=True)
+            st.divider()
+            
+            # --- EDIT & DELETE SECTION ---
+            sel_c_options = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')})" for _, r in df_c.iterrows()]
+            sel_c_str = st.selectbox("Select Customer to Edit / Update / Delete:", sel_c_options)
+            
+            if sel_c_str:
+                sel_c_id = int(sel_c_str.split(" ")[1].replace("#", ""))
+                c_row = df_c[df_c["ID"] == sel_c_id].iloc[0]
+                
+                with st.expander(f"📝 Edit Client Profile #{sel_c_id} - {c_row.get('Customer Name', '')}", expanded=True):
+                    ec1, ec2 = st.columns(2)
+                    u_cname = ec1.text_input("Customer Name *", str(c_row.get("Customer Name", "")))
+                    u_cphone = ec2.text_input("Mobile Number *", str(c_row.get("Mobile Number", "")))
+                    
+                    ec3, ec4 = st.columns(2)
+                    u_caddr = ec3.text_input("Address / City / Village", str(c_row.get("City/Address", "Kadi")) if pd.notna(c_row.get("City/Address")) else "")
+                    
+                    curr_serv = str(c_row.get("Primary Service / Purpose", "VISA"))
+                    serv_idx = SERVICE_OPTIONS.index(curr_serv) if curr_serv in SERVICE_OPTIONS else 0
+                    u_cserv = ec4.selectbox("Primary Service", SERVICE_OPTIONS, index=serv_idx)
+                    
+                    u_cnotes = st.text_area("Notes / Remarks", str(c_row.get("Notes", "")) if pd.notna(c_row.get("Notes")) else "")
+                    
+                    st.markdown("🔒 **Security Confirmation:**")
+                    edit_pin = st.text_input("Enter Master Security PIN:", type="password", key=f"c_pin_{sel_c_id}")
+                    
+                    b_col1, b_col2 = st.columns(2)
+                    if b_col1.button("🔄 Update Customer Details", key=f"btn_up_{sel_c_id}", use_container_width=True):
+                        if edit_pin == DataManager.get_pin():
+                            DataManager.update_row("Customers", sel_c_id, {
+                                "Customer Name": u_cname,
+                                "Mobile Number": str(u_cphone).strip(),
+                                "City/Address": u_caddr,
+                                "Primary Service / Purpose": u_cserv,
+                                "Notes": u_cnotes
+                            })
+                            st.success("Client profile updated successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+                            
+                    if b_col2.button("🗑️ Delete Customer", key=f"btn_del_{sel_c_id}", type="primary", use_container_width=True):
+                        if edit_pin == DataManager.get_pin():
+                            DataManager.delete_row("Customers", sel_c_id)
+                            st.warning("Client deleted successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+        else:
+            st.info("No registered clients found. Please add clients using the 'Add Client' tab.")
+
+    with tab_promo:
+        st.markdown("##### 📢 Bulk Broadcast & Promotion List")
+        df_c = DataManager.get_df("Customers")
+        if not df_c.empty:
+            sel_aud = st.selectbox("Select Target Audience:", ["All Clients"] + list(df_c["Primary Service / Purpose"].dropna().unique()))
+            target_df = df_c if sel_aud == "All Clients" else df_c[df_c["Primary Service / Purpose"] == sel_aud]
+            
+            st.write(f"**Total Recipients:** {len(target_df)}")
+            st.dataframe(target_df[["Customer Name", "Mobile Number", "City/Address", "Primary Service / Purpose", "Notes"]], use_container_width=True)
+            
+            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.")
+            for _, prow in target_df.head(10).iterrows():
+                p_url = f"https://wa.me/91{str(prow['Mobile Number']).strip()}?text={urllib.parse.quote(promo_msg)}"
+                st.markdown(f"👉 **{prow['Customer Name']}** ({prow['Mobile Number']}) - [{prow.get('City/Address', 'Kadi')}]: [📲 Send WhatsApp]({p_url})")
+        else:
+            st.info("No client records available.")
 
 # ----------------- 7. INCOME & EXPENSE MANAGEMENT -----------------
 elif menu == "💰 Income":
