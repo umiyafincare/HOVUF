@@ -62,16 +62,35 @@ st.markdown("""
             color: #FFFFFF !important;
             border: none !important;
         }
-        div[data-testid="metric-container"] {
+        
+        /* Custom Full-Width Overview KPI Cards */
+        .kpi-card {
             background-color: #FFFFFF;
             border: 1px solid #E2E8F0;
-            padding: 14px 18px;
-            border-radius: 10px;
-            border-left: 4px solid #2563EB;
+            padding: 16px 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+            margin-bottom: 12px;
         }
-        div[data-testid="stMetricValue"] {
-            font-weight: 700;
+        .kpi-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748B;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .kpi-value {
+            font-size: 24px;
+            font-weight: 800;
             color: #0F172A;
+            word-wrap: break-word;
+            margin-bottom: 4px;
+        }
+        .kpi-sub {
+            font-size: 12px;
+            color: #475569;
+            font-weight: 500;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -166,7 +185,6 @@ class DataManager:
 
     @staticmethod
     def sync_customer_record(cust_name, cust_phone, service_name, remarks=""):
-        """Automatically adds or updates client directory when bill is created"""
         clean_phone = str(cust_phone).strip()
         if not clean_phone or not cust_name:
             return
@@ -192,7 +210,6 @@ class DataManager:
                     "Notes": remarks
                 })
             else:
-                # Update latest activity
                 c_id = df_c.at[matching_idx[0], "ID"]
                 DataManager.update_row("Customers", c_id, {
                     "Customer Name": cust_name.strip(),
@@ -314,7 +331,7 @@ menu_items = [
     ("📊 Dashboard", "Business metrics & live summary"),
     ("⏰ Task Reminders", "Calendar & Clock Reminders"),
     ("🧾 Generate Bill / Voucher", "Create, Edit, Print Invoices & Vouchers"),
-    ("📄 Reports & PDF", "Statements & Reports"),
+    ("📄 Reports & PDF", "Financial Statements & PDF Export"),
     ("🏦 Opening Balance", "Set Starting Balances"),
     ("👥 Customers Directory", "Manage Clients & Broadcasts"),
     ("💰 Income", "View & Manage Income"),
@@ -350,7 +367,6 @@ SERVICE_OPTIONS = [
 ]
 
 def search_customer_profile(search_text):
-    """Searches customer profile and matches pending dues across database"""
     if not search_text:
         return None, 0.0, []
     clean_q = str(search_text).strip()
@@ -367,7 +383,6 @@ def search_customer_profile(search_text):
             if not m_name.empty:
                 matched_cust = m_name.iloc[0]
                 
-    # Search Pending Dues
     total_due = 0.0
     due_records = []
     if not df_b.empty and "Pending Amount" in df_b:
@@ -436,10 +451,11 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD -----------------
+# ----------------- 1. DASHBOARD (NEW FULL-WIDTH RESPONSIVE OVERVIEW) -----------------
 if menu == "📊 Dashboard":
-    st.subheader("📊 Business Overview")
+    st.subheader("📊 Business Overview & Financial Summary")
     
+    # Active Reminder Notifications
     df_rem_all = DataManager.get_df("Task_Reminder")
     if not df_rem_all.empty and "Status" in df_rem_all:
         pending_tasks = df_rem_all[df_rem_all["Status"] == "Pending"]
@@ -473,24 +489,69 @@ if menu == "📊 Dashboard":
     df_cust = DataManager.get_df("Customers")
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    today_inc = df_inc[df_inc["Date"] == today_str]["Amount"].sum() if not df_inc.empty and "Date" in df_inc and "Amount" in df_inc else 0
-    total_inc = df_inc["Amount"].sum() if not df_inc.empty and "Amount" in df_inc else 0
-    today_exp = df_exp[df_exp["Date"] == today_str]["Amount"].sum() if not df_exp.empty and "Date" in df_exp and "Amount" in df_exp else 0
-    total_exp = df_exp["Amount"].sum() if not df_exp.empty and "Amount" in df_exp else 0
-    total_baki = df_baki["Pending Amount"].sum() if not df_baki.empty and "Pending Amount" in df_baki else 0
+    today_inc = df_inc[df_inc["Date"] == today_str]["Amount"].sum() if not df_inc.empty and "Date" in df_inc and "Amount" in df_inc else 0.0
+    total_inc = df_inc["Amount"].sum() if not df_inc.empty and "Amount" in df_inc else 0.0
+    today_exp = df_exp[df_exp["Date"] == today_str]["Amount"].sum() if not df_exp.empty and "Date" in df_exp and "Amount" in df_exp else 0.0
+    total_exp = df_exp["Amount"].sum() if not df_exp.empty and "Amount" in df_exp else 0.0
+    total_baki = df_baki["Pending Amount"].sum() if not df_baki.empty and "Pending Amount" in df_baki else 0.0
     
     cash_op, bank_op = DataManager.get_opening_balance()
     tot_op = cash_op + bank_op
     closing_net_balance = tot_op + total_inc - total_exp
     total_cust = len(df_cust) if not df_cust.empty else 0
 
-    col0, col1, col2, col3, col4, col5 = st.columns(6)
-    col0.metric("Opening Balance", f"₹ {tot_op:,.2f}", f"Cash: ₹{cash_op:,.0f} | Bank: ₹{bank_op:,.0f}")
-    col1.metric("Today's Income", f"₹ {today_inc:,.2f}", f"Total: ₹ {total_inc:,.2f}")
-    col2.metric("Today's Expense", f"₹ {today_exp:,.2f}", f"Total: ₹ {total_exp:,.2f}", delta_color="inverse")
-    col3.metric("Closing Balance", f"₹ {closing_net_balance:,.2f}")
-    col4.metric("Total Pending Dues", f"₹ {total_baki:,.2f}")
-    col5.metric("Registered Clients", f"{total_cust}")
+    # 3x2 Grid with Wide Custom Cards
+    k_row1_c1, k_row1_c2, k_row1_c3 = st.columns(3)
+    with k_row1_c1:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #2563EB;">
+                <div class="kpi-label">🏦 Total Opening Balance</div>
+                <div class="kpi-value">₹ {tot_op:,.2f}</div>
+                <div class="kpi-sub">Cash: ₹ {cash_op:,.2f} | Bank: ₹ {bank_op:,.2f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with k_row1_c2:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #16A34A;">
+                <div class="kpi-label">💰 Total Revenue (Income)</div>
+                <div class="kpi-value" style="color: #15803D;">₹ {total_inc:,.2f}</div>
+                <div class="kpi-sub">Today's Inflow: ₹ {today_inc:,.2f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with k_row1_c3:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #DC2626;">
+                <div class="kpi-label">💸 Total Expenses</div>
+                <div class="kpi-value" style="color: #DC2626;">₹ {total_exp:,.2f}</div>
+                <div class="kpi-sub">Today's Outflow: ₹ {today_exp:,.2f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    k_row2_c1, k_row2_c2, k_row2_c3 = st.columns(3)
+    with k_row2_c1:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #0284C7;">
+                <div class="kpi-label">💼 Net Closing Balance</div>
+                <div class="kpi-value" style="color: #0369A1;">₹ {closing_net_balance:,.2f}</div>
+                <div class="kpi-sub">Available Business Capital</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with k_row2_c2:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #D97706;">
+                <div class="kpi-label">📋 Total Pending Dues</div>
+                <div class="kpi-value" style="color: #B45309;">₹ {total_baki:,.2f}</div>
+                <div class="kpi-sub">Uncollected Client Receivables</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with k_row2_c3:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #7C3AED;">
+                <div class="kpi-label">👥 Registered Clients</div>
+                <div class="kpi-value" style="color: #6D28D9;">{total_cust}</div>
+                <div class="kpi-sub">Total Active Directory Records</div>
+            </div>
+        """, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("📋 Pending Collections & Itemized WhatsApp Reminders")
@@ -550,7 +611,7 @@ elif menu == "⏰ Task Reminders":
         if not df_rem.empty:
             st.dataframe(df_rem[df_rem["Status"] == "Completed"], use_container_width=True)
 
-# ----------------- 3. INVOICE GENERATION (WITH INSTANT LIVE LOOKUP & AUTO-CUSTOMER ADD) -----------------
+# ----------------- 3. INVOICE GENERATION -----------------
 elif menu == "🧾 Generate Bill / Voucher":
     st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers")
     bill_type = st.radio("Select Action:", [
@@ -562,7 +623,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         "Settle Old Pending Due"
     ], horizontal=True)
     
-    # --- 1. NEW CUSTOMER INVOICE WITH LIVE SEARCH & AUTO-REGISTER ---
+    # --- 1. NEW CUSTOMER INVOICE ---
     if bill_type == "Customer Invoice (Income)":
         st.markdown("### 🔍 STEP 1: Quick Customer Lookup & Live Due Detection")
         
@@ -588,7 +649,6 @@ elif menu == "🧾 Generate Bill / Voucher":
         cust_name = col_c1.text_input("Customer Name *", value=init_name)
         cust_phone = col_c2.text_input("Mobile Number (10 Digits) *", value=init_phone)
         
-        # --- LIVE DATABASE MATCH & DUE DETECTION ---
         search_term = cust_phone if cust_phone else cust_name
         if search_term:
             matched_profile, live_due, due_records = search_customer_profile(search_term)
@@ -596,7 +656,7 @@ elif menu == "🧾 Generate Bill / Voucher":
             if matched_profile is not None or live_due > 0:
                 st.markdown(f"""
                     <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin: 10px 0;">
-                        <h4 style="color: #15803D; margin: 0;">✅ Client Match Found in Database: {matched_profile.get('Customer Name') if matched_profile is not None else cust_name}</h4>
+                        <h4 style="color: #15803D; margin: 0;">✅ Client Match Found: {matched_profile.get('Customer Name') if matched_profile is not None else cust_name}</h4>
                         <p style="margin: 3px 0 0 0; font-size: 13px; color: #334155;">
                             📞 Mobile: <b>{matched_profile.get('Mobile Number') if matched_profile is not None else cust_phone}</b> | 
                             📍 City: <b>{matched_profile.get('City/Address', 'Kadi') if matched_profile is not None else 'Kadi'}</b> | 
@@ -607,12 +667,11 @@ elif menu == "🧾 Generate Bill / Voucher":
             else:
                 st.info("ℹ️ New Client: Details will be **automatically added to Customer Directory** upon bill generation.")
 
-            # Live Due Balance Alert Box
             if live_due > 0:
                 st.markdown(f"""
                     <div style="background: #FEF2F2; border-left: 5px solid #DC2626; padding: 12px 16px; border-radius: 8px; margin: 8px 0 15px 0;">
                         <h4 style="color: #B91C1C; margin: 0;">⚠️ Outstanding Pending Due Alert: ₹ {live_due:,.2f}</h4>
-                        <p style="margin: 2px 0 0 0; font-size: 13px; color: #7F1D1D;">This customer has an existing unpaid balance from previous services.</p>
+                        <p style="margin: 2px 0 0 0; font-size: 13px; color: #7F1D1D;">This customer has an existing unpaid balance.</p>
                     </div>
                 """, unsafe_allow_html=True)
                 with st.expander("🔎 View Previous Unpaid Dues Breakdown"):
@@ -649,28 +708,21 @@ elif menu == "🧾 Generate Bill / Voucher":
         item_desc = s1 + (f" + {s2}" if s2 else "")
         
         if baki_amt > 0:
-            st.warning(f"⚠️ Balance Due on this Bill: ₹ {baki_amt:,.2f} for '{item_desc}' (Will be logged under Due Collections)")
+            st.warning(f"⚠️ Balance Due on this Bill: ₹ {baki_amt:,.2f} for '{item_desc}'")
             
         remarks = st.text_input("Remarks / Notes", "Thank you for choosing our services!")
 
         if st.button("💾 Generate Bill, Save & Export PDF", type="primary", use_container_width=True):
             if cust_name and total_bill > 0 and s1:
-                # 1. AUTO-SAVE / UPDATE TO CUSTOMERS DIRECTORY
                 DataManager.sync_customer_record(cust_name, cust_phone, s1, remarks)
-                
-                # 2. SAVE TO INVOICES ARCHIVE
                 DataManager.append_row("Invoices_Archive", {
                     "Invoice No": bill_no, "Date": bill_date, "Customer Name": cust_name.strip(),
                     "Mobile Number": str(cust_phone).strip(), "Service 1": s1, "Amount 1": amt1,
                     "Service 2": s2, "Amount 2": amt2, "Total Amount": total_bill,
                     "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Payment Mode": pay_mode, "Remarks": remarks
                 })
-                
-                # 3. RECORD INCOME IF PAID
                 if rec_amt > 0:
                     DataManager.append_row("Income", {"Date": bill_date, "Customer/Person": cust_name.strip(), "Work Details": f"Bill #{bill_no}: {item_desc}", "Amount": rec_amt, "Payment Mode": pay_mode, "Notes": f"Mob: {cust_phone}"})
-                
-                # 4. RECORD PENDING DUE IF ANY
                 if baki_amt > 0:
                     DataManager.append_row("Udhar_Baki", {"Date": bill_date, "Customer Name": cust_name.strip(), "Mobile Number": str(cust_phone).strip(), "Service Details": item_desc, "Total Amount": total_bill, "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Due Date": due_date, "Status": "Pending"})
                 
@@ -689,7 +741,7 @@ elif menu == "🧾 Generate Bill / Voucher":
             else:
                 st.error("Please enter customer name, valid service, and bill amount.")
 
-    # --- 2. EDIT / DELETE GENERATED INVOICES (PIN PROTECTED) ---
+    # --- 2. EDIT / DELETE GENERATED INVOICES ---
     elif bill_type == "✏️ Edit / Delete Invoices (Requires PIN)":
         st.markdown("### 🔐 Modify or Delete Existing Invoice Record")
         df_arch = DataManager.get_df("Invoices_Archive")
@@ -788,7 +840,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 DataManager.append_row("Expense", {"Date": v_date, "Expense Name": f"{p_name} ({p_desc})", "Amount": p_amt, "Notes": f"VOU #{v_no} | {p_mode}"})
                 st.success("Expense Recorded!")
 
-    # --- 5. EDIT / DELETE EXPENSE VOUCHERS (PIN PROTECTED) ---
+    # --- 5. EDIT / DELETE EXPENSE VOUCHERS ---
     elif bill_type == "✏️ Edit / Delete Vouchers (Requires PIN)":
         st.markdown("### 🔐 Modify or Delete Payment Voucher Record")
         df_exp = DataManager.get_df("Expense")
@@ -856,9 +908,9 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled!")
                     st.rerun()
 
-# ----------------- 4. REPORTS & PDF -----------------
+# ----------------- 4. REPORTS & PDF (WORKING PDF EXPORTS) -----------------
 elif menu == "📄 Reports & PDF":
-    st.subheader("📄 Financial Reports")
+    st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
     d_from = c1.date_input("From Date", datetime.now().replace(day=1)).strftime("%Y-%m-%d")
     d_to = c2.date_input("To Date", datetime.now()).strftime("%Y-%m-%d")
@@ -869,22 +921,114 @@ elif menu == "📄 Reports & PDF":
     
     f_i = df_i[(df_i["Date"] >= d_from) & (df_i["Date"] <= d_to)] if not df_i.empty and "Date" in df_i else pd.DataFrame()
     f_e = df_e[(df_e["Date"] >= d_from) & (df_e["Date"] <= d_to)] if not df_e.empty and "Date" in df_e else pd.DataFrame()
+    f_b = df_b[(df_b["Date"] >= d_from) & (df_b["Date"] <= d_to)] if not df_b.empty and "Date" in df_b else (df_b if not df_b.empty else pd.DataFrame())
     
-    t_i = f_i["Amount"].sum() if not f_i.empty and "Amount" in f_i else 0
-    t_e = f_e["Amount"].sum() if not f_e.empty and "Amount" in f_e else 0
+    t_i = f_i["Amount"].sum() if not f_i.empty and "Amount" in f_i else 0.0
+    t_e = f_e["Amount"].sum() if not f_e.empty and "Amount" in f_e else 0.0
     cash_op, bank_op = DataManager.get_opening_balance()
     tot_op = cash_op + bank_op
     closing_bal = tot_op + t_i - t_e
     
     st.info(f"**Period:** {d_from} to {d_to} | **Revenue:** ₹{t_i:,.2f} | **Expenses:** ₹{t_e:,.2f} | **Closing Balance:** ₹{closing_bal:,.2f}")
     
-    t1, t2, t3 = st.tabs(["💰 Income Report", "💸 Expense Report", "📋 Due Collections Report"])
+    def generate_statement_pdf(period_from, period_to, df_inc, df_exp, op_bal, tot_rev, tot_exp, cl_bal):
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=20, bottomMargin=20)
+        elems = []
+        styles = getSampleStyleSheet()
+        
+        c_title = ParagraphStyle('T1', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor("#1E3A8A"), alignment=1)
+        c_sub = ParagraphStyle('T2', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor("#475569"), alignment=1)
+        
+        logo_l = PDFImage(LOGO_VISA, width=50, height=50) if os.path.exists(LOGO_VISA) else ""
+        logo_r = PDFImage(LOGO_FINCARE, width=75, height=38) if os.path.exists(LOGO_FINCARE) else ""
+            
+        hdr_table_data = [[
+            logo_l,
+            [
+                Paragraph(f"<b>{COMPANY_NAME}</b>", c_title),
+                Paragraph(f"📍 {COMPANY_ADDRESS} | 📞 Phone: {COMPANY_MOBILE}", c_sub),
+                Paragraph(f"STATEMENT OF ACCOUNTS ({period_from} to {period_to})", ParagraphStyle('T3', parent=styles['Heading2'], fontSize=11, alignment=1))
+            ],
+            logo_r
+        ]]
+        t_hdr = Table(hdr_table_data, colWidths=[65, 415, 75])
+        t_hdr.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+            ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elems.append(t_hdr)
+        elems.append(Spacer(1, 8))
+        elems.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1E3A8A"), spaceAfter=8))
+
+        sum_tbl = Table([
+            ["Opening Balance", f"Rs. {op_bal:,.2f}"],
+            ["Total Revenue (Income)", f"Rs. {tot_rev:,.2f}"],
+            ["Total Expenses", f"Rs. {tot_exp:,.2f}"],
+            ["Closing Net Balance", f"Rs. {cl_bal:,.2f}"]
+        ], colWidths=[200, 200])
+        sum_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor("#CBD5E1")),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ]))
+        elems.append(sum_tbl)
+        elems.append(Spacer(1, 12))
+
+        if not df_inc.empty:
+            elems.append(Paragraph("<b>Revenue Details (Income):</b>", styles['Heading3']))
+            i_rows = [["Date", "Customer / Party", "Description", "Mode", "Amount (Rs.)"]]
+            for _, r in df_inc.iterrows():
+                i_rows.append([str(r.get("Date", "-")), str(r.get("Customer/Person", "-")), str(r.get("Work Details", "-")), str(r.get("Payment Mode", "-")), f"{float(r.get('Amount', 0)):,.2f}"])
+            t1 = Table(i_rows, colWidths=[65, 120, 160, 85, 100])
+            t1.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
+            ]))
+            elems.append(t1)
+            elems.append(Spacer(1, 12))
+
+        if not df_exp.empty:
+            elems.append(Paragraph("<b>Expense Details:</b>", styles['Heading3']))
+            e_rows = [["Date", "Expense Particulars", "Notes", "Amount (Rs.)"]]
+            for _, r in df_exp.iterrows():
+                e_rows.append([str(r.get("Date", "-")), str(r.get("Expense Name", "-")), str(r.get("Notes", "-")), f"{float(r.get('Amount', 0)):,.2f}"])
+            t2 = Table(e_rows, colWidths=[75, 230, 115, 110])
+            t2.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#DC2626")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
+            ]))
+            elems.append(t2)
+
+        doc.build(elems)
+        buf.seek(0)
+        return buf
+
+    # Statement PDF Download Button
+    stat_pdf = generate_statement_pdf(d_from, d_to, f_i, f_e, tot_op, t_i, t_e, closing_bal)
+    st.download_button(
+        label="📥 Download Complete Financial Statement (PDF)",
+        data=stat_pdf,
+        file_name=f"Financial_Statement_{d_from}_to_{d_to}.pdf",
+        mime="application/pdf",
+        type="primary",
+        use_container_width=True
+    )
+    st.divider()
+
+    t1, t2, t3 = st.tabs(["💰 Income Breakdown", "💸 Expense Breakdown", "📋 Due Collections Status"])
     with t1:
         st.dataframe(f_i, use_container_width=True)
     with t2:
         st.dataframe(f_e, use_container_width=True)
     with t3:
-        st.dataframe(df_b, use_container_width=True)
+        st.dataframe(f_b, use_container_width=True)
 
 # ----------------- 5. OPENING BALANCE -----------------
 elif menu == "🏦 Opening Balance":
@@ -902,7 +1046,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY (WITH EDIT, ADDRESS & NOTES) -----------------
+# ----------------- 6. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
