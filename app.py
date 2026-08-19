@@ -8,7 +8,7 @@ import openpyxl
 from openpyxl import Workbook
 
 # ReportLab for PDF Bill & Reports
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as PDFImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -63,7 +63,6 @@ st.markdown("""
             border: none !important;
         }
         
-        /* Custom Full-Width Overview KPI Cards */
         .kpi-card {
             background-color: #FFFFFF;
             border: 1px solid #E2E8F0;
@@ -451,11 +450,10 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD (NEW FULL-WIDTH RESPONSIVE OVERVIEW) -----------------
+# ----------------- 1. DASHBOARD -----------------
 if menu == "📊 Dashboard":
     st.subheader("📊 Business Overview & Financial Summary")
     
-    # Active Reminder Notifications
     df_rem_all = DataManager.get_df("Task_Reminder")
     if not df_rem_all.empty and "Status" in df_rem_all:
         pending_tasks = df_rem_all[df_rem_all["Status"] == "Pending"]
@@ -500,7 +498,6 @@ if menu == "📊 Dashboard":
     closing_net_balance = tot_op + total_inc - total_exp
     total_cust = len(df_cust) if not df_cust.empty else 0
 
-    # 3x2 Grid with Wide Custom Cards
     k_row1_c1, k_row1_c2, k_row1_c3 = st.columns(3)
     with k_row1_c1:
         st.markdown(f"""
@@ -908,7 +905,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled!")
                     st.rerun()
 
-# ----------------- 4. REPORTS & PDF (WORKING PDF EXPORTS) -----------------
+# ----------------- 4. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
@@ -931,28 +928,39 @@ elif menu == "📄 Reports & PDF":
     
     st.info(f"**Period:** {d_from} to {d_to} | **Revenue:** ₹{t_i:,.2f} | **Expenses:** ₹{t_e:,.2f} | **Closing Balance:** ₹{closing_bal:,.2f}")
     
-    def generate_statement_pdf(period_from, period_to, df_inc, df_exp, op_bal, tot_rev, tot_exp, cl_bal):
+    def generate_statement_pdf_landscape(period_from, period_to, df_inc, df_exp, df_due, op_bal, tot_rev, tot_exp, cl_bal):
         buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=20, bottomMargin=20)
+        # LANDSCAPE A4 Document Setup (Width: 842pt, Height: 595pt)
+        doc = SimpleDocTemplate(
+            buf, 
+            pagesize=landscape(A4), 
+            rightMargin=25, 
+            leftMargin=25, 
+            topMargin=20, 
+            bottomMargin=20
+        )
         elems = []
         styles = getSampleStyleSheet()
         
-        c_title = ParagraphStyle('T1', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor("#1E3A8A"), alignment=1)
-        c_sub = ParagraphStyle('T2', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor("#475569"), alignment=1)
+        c_title = ParagraphStyle('T1', parent=styles['Heading1'], fontSize=16, leading=18, textColor=colors.HexColor("#1E3A8A"), alignment=1)
+        c_sub = ParagraphStyle('T2', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.HexColor("#475569"), alignment=1)
+        tbl_text = ParagraphStyle('TT', parent=styles['Normal'], fontSize=8.5, leading=10.5, textColor=colors.HexColor("#0F172A"))
+        tbl_hdr = ParagraphStyle('TH', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.white, fontName="Helvetica-Bold")
         
         logo_l = PDFImage(LOGO_VISA, width=50, height=50) if os.path.exists(LOGO_VISA) else ""
         logo_r = PDFImage(LOGO_FINCARE, width=75, height=38) if os.path.exists(LOGO_FINCARE) else ""
             
+        # Top Header (Landscape width = ~790pt)
         hdr_table_data = [[
             logo_l,
             [
                 Paragraph(f"<b>{COMPANY_NAME}</b>", c_title),
                 Paragraph(f"📍 {COMPANY_ADDRESS} | 📞 Phone: {COMPANY_MOBILE}", c_sub),
-                Paragraph(f"STATEMENT OF ACCOUNTS ({period_from} to {period_to})", ParagraphStyle('T3', parent=styles['Heading2'], fontSize=11, alignment=1))
+                Paragraph(f"<b>FINANCIAL STATEMENT & BUSINESS LEDGER ({period_from} to {period_to})</b>", ParagraphStyle('T3', parent=styles['Heading2'], fontSize=11, leading=13, alignment=1))
             ],
             logo_r
         ]]
-        t_hdr = Table(hdr_table_data, colWidths=[65, 415, 75])
+        t_hdr = Table(hdr_table_data, colWidths=[70, 650, 70])
         t_hdr.setStyle(TableStyle([
             ('ALIGN', (0, 0), (0, -1), 'LEFT'),
             ('ALIGN', (1, 0), (1, -1), 'CENTER'),
@@ -960,62 +968,134 @@ elif menu == "📄 Reports & PDF":
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         elems.append(t_hdr)
-        elems.append(Spacer(1, 8))
+        elems.append(Spacer(1, 6))
         elems.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1E3A8A"), spaceAfter=8))
 
+        # Financial KPI Summary Matrix
         sum_tbl = Table([
-            ["Opening Balance", f"Rs. {op_bal:,.2f}"],
-            ["Total Revenue (Income)", f"Rs. {tot_rev:,.2f}"],
-            ["Total Expenses", f"Rs. {tot_exp:,.2f}"],
-            ["Closing Net Balance", f"Rs. {cl_bal:,.2f}"]
-        ], colWidths=[200, 200])
+            [
+                Paragraph("<b>Total Opening Balance:</b>", tbl_text), f"Rs. {op_bal:,.2f}",
+                Paragraph("<b>Total Revenue (Income):</b>", tbl_text), f"Rs. {tot_rev:,.2f}"
+            ],
+            [
+                Paragraph("<b>Total Expenses:</b>", tbl_text), f"Rs. {tot_exp:,.2f}",
+                Paragraph("<b>Net Closing Balance:</b>", tbl_text), f"Rs. {cl_bal:,.2f}"
+            ]
+        ], colWidths=[180, 215, 180, 215])
         sum_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
-            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor("#CBD5E1")),
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
         elems.append(sum_tbl)
-        elems.append(Spacer(1, 12))
+        elems.append(Spacer(1, 10))
 
+        # INCOME SECTION
         if not df_inc.empty:
-            elems.append(Paragraph("<b>Revenue Details (Income):</b>", styles['Heading3']))
-            i_rows = [["Date", "Customer / Party", "Description", "Mode", "Amount (Rs.)"]]
+            elems.append(Paragraph("<b>💰 REVENUE / INCOME BREAKDOWN:</b>", styles['Heading3']))
+            i_rows = [[
+                Paragraph("Date", tbl_hdr), 
+                Paragraph("Customer / Client Name", tbl_hdr), 
+                Paragraph("Work & Service Details", tbl_hdr), 
+                Paragraph("Mode", tbl_hdr), 
+                Paragraph("Amount (Rs.)", tbl_hdr)
+            ]]
             for _, r in df_inc.iterrows():
-                i_rows.append([str(r.get("Date", "-")), str(r.get("Customer/Person", "-")), str(r.get("Work Details", "-")), str(r.get("Payment Mode", "-")), f"{float(r.get('Amount', 0)):,.2f}"])
-            t1 = Table(i_rows, colWidths=[65, 120, 160, 85, 100])
+                i_rows.append([
+                    Paragraph(str(r.get("Date", "-")), tbl_text),
+                    Paragraph(str(r.get("Customer/Person", "-")), tbl_text),
+                    Paragraph(str(r.get("Work Details", "-")), tbl_text),
+                    Paragraph(str(r.get("Payment Mode", "-")), tbl_text),
+                    Paragraph(f"<b>{float(r.get('Amount', 0)):,.2f}</b>", tbl_text)
+                ])
+            t1 = Table(i_rows, colWidths=[80, 220, 310, 80, 100])
             t1.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                 ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3.5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
             ]))
             elems.append(t1)
-            elems.append(Spacer(1, 12))
+            elems.append(Spacer(1, 10))
 
+        # EXPENSE SECTION
         if not df_exp.empty:
-            elems.append(Paragraph("<b>Expense Details:</b>", styles['Heading3']))
-            e_rows = [["Date", "Expense Particulars", "Notes", "Amount (Rs.)"]]
+            elems.append(Paragraph("<b>💸 EXPENSE BREAKDOWN:</b>", styles['Heading3']))
+            e_rows = [[
+                Paragraph("Date", tbl_hdr), 
+                Paragraph("Expense Particulars / Description", tbl_hdr), 
+                Paragraph("Notes / Remarks", tbl_hdr), 
+                Paragraph("Amount (Rs.)", tbl_hdr)
+            ]]
             for _, r in df_exp.iterrows():
-                e_rows.append([str(r.get("Date", "-")), str(r.get("Expense Name", "-")), str(r.get("Notes", "-")), f"{float(r.get('Amount', 0)):,.2f}"])
-            t2 = Table(e_rows, colWidths=[75, 230, 115, 110])
+                e_rows.append([
+                    Paragraph(str(r.get("Date", "-")), tbl_text),
+                    Paragraph(str(r.get("Expense Name", "-")), tbl_text),
+                    Paragraph(str(r.get("Notes", "-")), tbl_text),
+                    Paragraph(f"<b>{float(r.get('Amount', 0)):,.2f}</b>", tbl_text)
+                ])
+            t2 = Table(e_rows, colWidths=[80, 380, 230, 100])
             t2.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#DC2626")),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                 ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3.5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
             ]))
             elems.append(t2)
+            elems.append(Spacer(1, 10))
+
+        # PENDING DUES SECTION
+        if not df_due.empty:
+            active_dues = df_due[df_due["Pending Amount"] > 0] if "Pending Amount" in df_due else pd.DataFrame()
+            if not active_dues.empty:
+                elems.append(Paragraph("<b>📋 OUTSTANDING PENDING DUES (RECEIVABLES):</b>", styles['Heading3']))
+                d_rows = [[
+                    Paragraph("Date", tbl_hdr), 
+                    Paragraph("Customer Name", tbl_hdr), 
+                    Paragraph("Mobile", tbl_hdr), 
+                    Paragraph("Service Details", tbl_hdr), 
+                    Paragraph("Total (Rs.)", tbl_hdr), 
+                    Paragraph("Paid (Rs.)", tbl_hdr), 
+                    Paragraph("Balance (Rs.)", tbl_hdr), 
+                    Paragraph("Due Date", tbl_hdr)
+                ]]
+                for _, r in active_dues.iterrows():
+                    d_rows.append([
+                        Paragraph(str(r.get("Date", "-")), tbl_text),
+                        Paragraph(str(r.get("Customer Name", "-")), tbl_text),
+                        Paragraph(str(r.get("Mobile Number", "-")), tbl_text),
+                        Paragraph(str(r.get("Service Details", "Service")), tbl_text),
+                        Paragraph(f"{float(r.get('Total Amount', 0)):,.2f}", tbl_text),
+                        Paragraph(f"{float(r.get('Paid Amount', 0)):,.2f}", tbl_text),
+                        Paragraph(f"<b>{float(r.get('Pending Amount', 0)):,.2f}</b>", tbl_text),
+                        Paragraph(str(r.get("Due Date", "-")), tbl_text)
+                    ])
+                t3 = Table(d_rows, colWidths=[70, 160, 95, 175, 75, 75, 75, 65])
+                t3.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#D97706")),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                    ('ALIGN', (4, 0), (6, -1), 'RIGHT'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3.5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
+                ]))
+                elems.append(t3)
 
         doc.build(elems)
         buf.seek(0)
         return buf
 
-    # Statement PDF Download Button
-    stat_pdf = generate_statement_pdf(d_from, d_to, f_i, f_e, tot_op, t_i, t_e, closing_bal)
+    # Landscape Statement PDF Download Button
+    stat_pdf = generate_statement_pdf_landscape(d_from, d_to, f_i, f_e, f_b, tot_op, t_i, t_e, closing_bal)
     st.download_button(
-        label="📥 Download Complete Financial Statement (PDF)",
+        label="📥 Download Complete Financial Statement (Landscape PDF)",
         data=stat_pdf,
-        file_name=f"Financial_Statement_{d_from}_to_{d_to}.pdf",
+        file_name=f"Landscape_Financial_Statement_{d_from}_to_{d_to}.pdf",
         mime="application/pdf",
         type="primary",
         use_container_width=True
