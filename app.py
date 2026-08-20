@@ -92,7 +92,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SQL DATABASE MANAGER -----------------
+# ----------------- SQL DATABASE MANAGER (COMPLETELY HARDENED) -----------------
 class SQLManager:
     @staticmethod
     def get_connection():
@@ -185,17 +185,34 @@ class SQLManager:
             )
         """)
 
+        # Clean Settings table without reserved keywords
         c.execute("""
             CREATE TABLE IF NOT EXISTS Settings (
-                Key TEXT PRIMARY KEY,
-                Value TEXT,
+                Setting_Key TEXT PRIMARY KEY,
+                Setting_Value TEXT,
                 Updated_Date TEXT
             )
         """)
 
-        c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Cash_Opening_Balance', '0.0', ?)", (datetime.now().strftime("%Y-%m-%d"),))
-        c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Bank_Opening_Balance', '0.0', ?)", (datetime.now().strftime("%Y-%m-%d"),))
-        c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Master_PIN', ?, ?)", (DEFAULT_PIN, datetime.now().strftime("%Y-%m-%d")))
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Check and migrate legacy settings columns if present
+        try:
+            c.execute("SELECT Setting_Key FROM Settings LIMIT 1")
+        except sqlite3.OperationalError:
+            # Drop malformed legacy table
+            c.execute("DROP TABLE IF EXISTS Settings")
+            c.execute("""
+                CREATE TABLE Settings (
+                    Setting_Key TEXT PRIMARY KEY,
+                    Setting_Value TEXT,
+                    Updated_Date TEXT
+                )
+            """)
+
+        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Cash_Opening_Balance', '0.0', ?)", (now_str,))
+        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Bank_Opening_Balance', '0.0', ?)", (now_str,))
+        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Master_PIN', ?, ?)", (DEFAULT_PIN, now_str))
 
         conn.commit()
         conn.close()
@@ -205,12 +222,12 @@ class SQLManager:
         SQLManager.init_db()
         conn = SQLManager.get_connection()
         try:
-            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+            df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
             conn.close()
             if df is not None and not df.empty:
                 df.columns = [c.replace('_', ' ').strip() if c != 'ID' else 'ID' for c in df.columns]
                 
-                # Normalization
+                # Normalization for backward compatibility
                 if table_name.lower() == "customers":
                     if "Primary Service" not in df.columns:
                         for alt in ["Primary Service / Purpose", "Primary_Service", "PrimaryService", "Service"]:
@@ -250,16 +267,20 @@ class SQLManager:
     def get_pin():
         conn = SQLManager.get_connection()
         c = conn.cursor()
-        c.execute("SELECT Value FROM Settings WHERE Key = 'Master_PIN'")
-        row = c.fetchone()
-        conn.close()
-        return str(row['Value']).strip() if row else DEFAULT_PIN
+        try:
+            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Master_PIN'")
+            row = c.fetchone()
+            conn.close()
+            return str(row['Setting_Value']).strip() if row else DEFAULT_PIN
+        except Exception:
+            conn.close()
+            return DEFAULT_PIN
 
     @staticmethod
     def set_pin(new_pin):
         conn = SQLManager.get_connection()
         c = conn.cursor()
-        c.execute("UPDATE Settings SET Value = ?, Updated_Date = ? WHERE Key = 'Master_PIN'", (str(new_pin).strip(), datetime.now().strftime("%Y-%m-%d")))
+        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Master_PIN'", (str(new_pin).strip(), datetime.now().strftime("%Y-%m-%d")))
         conn.commit()
         conn.close()
 
@@ -267,22 +288,26 @@ class SQLManager:
     def get_opening_balance():
         conn = SQLManager.get_connection()
         c = conn.cursor()
-        c.execute("SELECT Value FROM Settings WHERE Key = 'Cash_Opening_Balance'")
-        row_c = c.fetchone()
-        c.execute("SELECT Value FROM Settings WHERE Key = 'Bank_Opening_Balance'")
-        row_b = c.fetchone()
-        conn.close()
-        cash_op = float(row_c['Value']) if row_c else 0.0
-        bank_op = float(row_b['Value']) if row_b else 0.0
-        return cash_op, bank_op
+        try:
+            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Cash_Opening_Balance'")
+            row_c = c.fetchone()
+            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Bank_Opening_Balance'")
+            row_b = c.fetchone()
+            conn.close()
+            cash_op = float(row_c['Setting_Value']) if row_c else 0.0
+            bank_op = float(row_b['Setting_Value']) if row_b else 0.0
+            return cash_op, bank_op
+        except Exception:
+            conn.close()
+            return 0.0, 0.0
 
     @staticmethod
     def set_opening_balance(cash_op, bank_op):
         conn = SQLManager.get_connection()
         c = conn.cursor()
         dt = datetime.now().strftime("%Y-%m-%d")
-        c.execute("UPDATE Settings SET Value = ?, Updated_Date = ? WHERE Key = 'Cash_Opening_Balance'", (str(cash_op), dt))
-        c.execute("UPDATE Settings SET Value = ?, Updated_Date = ? WHERE Key = 'Bank_Opening_Balance'", (str(bank_op), dt))
+        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Cash_Opening_Balance'", (str(cash_op), dt))
+        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Bank_Opening_Balance'", (str(bank_op), dt))
         conn.commit()
         conn.close()
 
@@ -311,6 +336,8 @@ class SQLManager:
                     df = df.rename(columns={"Primary_Service___Purpose": "Primary_Service"})
                 if "Customer_Person" not in df.columns and "Customer_Name" in df.columns and target_table == "Income":
                     df = df.rename(columns={"Customer_Name": "Customer_Person"})
+                if "Key" in df.columns and target_table == "Settings":
+                    df = df.rename(columns={"Key": "Setting_Key", "Value": "Setting_Value"})
                 
                 if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
                     df.to_sql(target_table, conn, if_exists="replace", index=False)
@@ -729,7 +756,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 p_city = matched_profile.get('City Address', 'Kadi') if matched_profile is not None else 'Kadi'
                 p_serv = matched_profile.get('Primary Service', 'General') if matched_profile is not None else 'General'
                 st.markdown(f"""
-                    <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin: 10px 0;">
+                    <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin-0px 0;">
                         <h4 style="color: #15803D; margin: 0;">✅ Client Match Found: {p_name}</h4>
                         <p style="margin: 3px 0 0 0; font-size: 13px; color: #334155;">
                             📞 Mobile: <b>{p_phone}</b> | 
@@ -988,7 +1015,6 @@ elif menu == "🧾 Generate Bill / Voucher":
                 sel_acc = st.selectbox("Select Due Account:", [f"ID #{r['ID']} - {r['Customer Name']} | Pending: ₹{r['Pending Amount']}" for _, r in pending.iterrows()])
                 sel_id = int(sel_acc.split(" ")[1].replace("#", ""))
                 
-                # Fetch row directly to prevent KeyError
                 conn = SQLManager.get_connection()
                 c = conn.cursor()
                 c.execute("SELECT * FROM Udhar_Baki WHERE ID = ?", (sel_id,))
@@ -1018,7 +1044,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled in SQL!")
                     st.rerun()
 
-# ----------------- 4. DUE COLLECTIONS (VIEW, SETTLE, EDIT & DELETE WITH PIN) -----------------
+# ----------------- 4. DUE COLLECTIONS (VIEW, EDIT & DELETE WITH PIN) -----------------
 elif menu == "📋 Due Collections":
     st.subheader("📋 Due Collections & Credit Ledger Management (SQL)")
     
@@ -1461,7 +1487,6 @@ elif menu == "💾 Backup & Restore (Excel / SQL)":
         st.markdown("##### 📥 Export All Accounting Records")
         c_bk1, c_bk2 = st.columns(2)
         
-        # Excel Backup (.xlsx)
         excel_backup_data = SQLManager.export_sqlite_to_excel_buffer()
         c_bk1.download_button(
             label="📊 Download Full Excel Workbook (.xlsx)",
@@ -1472,7 +1497,6 @@ elif menu == "💾 Backup & Restore (Excel / SQL)":
             use_container_width=True
         )
         
-        # SQLite DB Backup (.db)
         if os.path.exists(DB_FILE):
             with open(DB_FILE, "rb") as f:
                 c_bk2.download_button(
