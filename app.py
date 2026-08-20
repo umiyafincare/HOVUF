@@ -208,25 +208,20 @@ class SQLManager:
             df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
             conn.close()
             if df is not None and not df.empty:
-                # Standardize column headers to space-separated format
                 df.columns = [c.replace('_', ' ').strip() if c != 'ID' else 'ID' for c in df.columns]
                 
-                # Alias normalization for Customers table
+                # Normalization
                 if table_name.lower() == "customers":
                     if "Primary Service" not in df.columns:
                         for alt in ["Primary Service / Purpose", "Primary_Service", "PrimaryService", "Service"]:
                             if alt in df.columns:
                                 df["Primary Service"] = df[alt]
                                 break
-                        if "Primary Service" not in df.columns:
-                            df["Primary Service"] = "General"
                     if "City Address" not in df.columns:
                         for alt in ["City/Address", "City_Address", "Address", "City"]:
                             if alt in df.columns:
                                 df["City Address"] = df[alt]
                                 break
-                        if "City Address" not in df.columns:
-                            df["City Address"] = "Kadi"
             return df
         except Exception:
             conn.close()
@@ -309,12 +304,13 @@ class SQLManager:
             
             for sheet_name, df in excel_data.items():
                 target_table = sheet_name.replace(" ", "_")
-                # Normalize column mappings for backward compatibility
                 df.columns = [c.replace(" ", "_").replace("/", "_") for c in df.columns]
+                
+                # Column alias mappings
                 if "Primary_Service___Purpose" in df.columns:
                     df = df.rename(columns={"Primary_Service___Purpose": "Primary_Service"})
-                if "City_Address" not in df.columns and "City_Address" in df.columns:
-                    df = df.rename(columns={"City_Address": "City_Address"})
+                if "Customer_Person" not in df.columns and "Customer_Name" in df.columns and target_table == "Income":
+                    df = df.rename(columns={"Customer_Name": "Customer_Person"})
                 
                 if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
                     df.to_sql(target_table, conn, if_exists="replace", index=False)
@@ -391,12 +387,12 @@ menu_items = [
     ("📊 Dashboard", "Business metrics & live summary"),
     ("⏰ Task Reminders", "Calendar & Clock Reminders"),
     ("🧾 Generate Bill / Voucher", "Create, Edit, Print Invoices & Vouchers"),
+    ("📋 Due Collections", "Customer Pending Dues & Edit Records"),
     ("📄 Reports & PDF", "Financial Statements & PDF Export"),
     ("🏦 Opening Balance", "Set Starting Balances"),
     ("👥 Customers Directory", "Manage Clients & Broadcasts"),
     ("💰 Income", "View & Manage Income"),
     ("💸 Expenses", "View & Manage Expenses"),
-    ("📋 Due Collections", "Customer Pending Dues"),
     ("💾 Backup & Restore (Excel / SQL)", "Export / Import Excel & SQL Database"),
     ("⚙️ Security / Change PIN", "Change Master PIN")
 ]
@@ -991,12 +987,24 @@ elif menu == "🧾 Generate Bill / Voucher":
             if not pending.empty:
                 sel_acc = st.selectbox("Select Due Account:", [f"ID #{r['ID']} - {r['Customer Name']} | Pending: ₹{r['Pending Amount']}" for _, r in pending.iterrows()])
                 sel_id = int(sel_acc.split(" ")[1].replace("#", ""))
-                r = df_baki[df_baki["ID"] == sel_id].iloc[0]
-                s_amt = st.number_input("Payment Received Now (₹) *", min_value=0.0, max_value=float(r["Pending Amount"]), value=float(r["Pending Amount"]), step=100.0)
+                
+                # Fetch row directly to prevent KeyError
+                conn = SQLManager.get_connection()
+                c = conn.cursor()
+                c.execute("SELECT * FROM Udhar_Baki WHERE ID = ?", (sel_id,))
+                r = c.fetchone()
+                conn.close()
+                
+                c_name = str(r['Customer_Name']) if 'Customer_Name' in r.keys() else str(r['Customer Name'])
+                c_serv = str(r['Service_Details']) if 'Service_Details' in r.keys() else str(r['Service Details'])
+                curr_pend = float(r['Pending_Amount']) if 'Pending_Amount' in r.keys() else float(r['Pending Amount'])
+                curr_paid = float(r['Paid_Amount']) if 'Paid_Amount' in r.keys() else float(r['Paid Amount'])
+                
+                s_amt = st.number_input("Payment Received Now (₹) *", min_value=0.0, max_value=curr_pend, value=curr_pend, step=100.0)
                 s_mode = st.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
                 if st.button("💳 Settle Balance", type="primary", use_container_width=True):
-                    new_paid = float(r["Paid Amount"]) + s_amt
-                    new_pending = float(r["Pending Amount"]) - s_amt
+                    new_paid = curr_paid + s_amt
+                    new_pending = curr_pend - s_amt
                     new_stat = "Cleared" if new_pending <= 0 else "Pending"
                     
                     conn = SQLManager.get_connection()
@@ -1004,13 +1012,90 @@ elif menu == "🧾 Generate Bill / Voucher":
                     c.execute("UPDATE Udhar_Baki SET Paid_Amount = ?, Pending_Amount = ?, Status = ? WHERE ID = ?",
                               (new_paid, new_pending, new_stat, sel_id))
                     c.execute("INSERT INTO Income (Date, Customer_Person, Work_Details, Amount, Payment_Mode, Notes) VALUES (?, ?, ?, ?, ?, ?)",
-                              (datetime.now().strftime("%Y-%m-%d"), r['Customer Name'], f"Due Settlement ({r.get('Service Details')})", s_amt, s_mode, f"Due Rec #{sel_id}"))
+                              (datetime.now().strftime("%Y-%m-%d"), c_name, f"Due Settlement ({c_serv})", s_amt, s_mode, f"Due Rec #{sel_id}"))
                     conn.commit()
                     conn.close()
                     st.success("Due Settled in SQL!")
                     st.rerun()
 
-# ----------------- 4. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
+# ----------------- 4. DUE COLLECTIONS (VIEW, SETTLE, EDIT & DELETE WITH PIN) -----------------
+elif menu == "📋 Due Collections":
+    st.subheader("📋 Due Collections & Credit Ledger Management (SQL)")
+    
+    tab_due_view, tab_due_edit = st.tabs(["📋 Active Due Receivables", "🔐 Edit / Modify Due Record (Requires PIN)"])
+    
+    with tab_due_view:
+        df_b = SQLManager.get_df("Udhar_Baki")
+        if not df_b.empty:
+            st.dataframe(df_b, use_container_width=True)
+        else:
+            st.info("No due records found.")
+            
+    with tab_due_edit:
+        st.markdown("##### 🔐 Modify or Delete Customer Due Record")
+        df_b = SQLManager.get_df("Udhar_Baki")
+        if not df_b.empty:
+            sel_due_opts = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) | Pending: ₹{r.get('Pending Amount', 0)}" for _, r in df_b.iterrows()]
+            chosen_due_str = st.selectbox("Select Due Record to Edit / Delete:", sel_due_opts, key="due_mod_select")
+            
+            if chosen_due_str:
+                sel_due_id = int(chosen_due_str.split(" ")[1].replace("#", ""))
+                due_r = df_b[df_b["ID"] == sel_due_id].iloc[0]
+                
+                with st.expander(f"📝 Edit Due Record #{sel_due_id} - {due_r.get('Customer Name', '')}", expanded=True):
+                    dc1, dc2 = st.columns(2)
+                    up_d_date = dc1.text_input("Entry Date", str(due_r.get("Date", "")), key=f"d_dt_{sel_due_id}")
+                    up_d_name = dc2.text_input("Customer Name", str(due_r.get("Customer Name", "")), key=f"d_nm_{sel_due_id}")
+                    
+                    dc3, dc4 = st.columns(2)
+                    up_d_phone = dc3.text_input("Mobile Number", str(due_r.get("Mobile Number", "")), key=f"d_ph_{sel_due_id}")
+                    up_d_serv = dc4.text_input("Service Details", str(due_r.get("Service Details", "Service")), key=f"d_sv_{sel_due_id}")
+                    
+                    dc5, dc6 = st.columns(2)
+                    up_d_tot = dc5.number_input("Total Amount (₹)", value=float(due_r.get("Total Amount", 0.0)), step=100.0, key=f"d_tot_{sel_due_id}")
+                    up_d_paid = dc6.number_input("Paid Amount (₹)", value=float(due_r.get("Paid Amount", 0.0)), max_value=float(up_d_tot), step=100.0, key=f"d_pd_{sel_due_id}")
+                    
+                    up_d_pending = up_d_tot - up_d_paid
+                    st.write(f"**Recalculated Pending Amount:** ₹ {up_d_pending:,.2f}")
+                    
+                    dc7, dc8 = st.columns(2)
+                    up_d_due_dt = dc7.text_input("Due Date", str(due_r.get("Due Date", "")), key=f"d_ddt_{sel_due_id}")
+                    up_d_stat = dc8.selectbox("Status", ["Pending", "Cleared"], index=0 if up_d_pending > 0 else 1, key=f"d_st_{sel_due_id}")
+                    
+                    st.markdown("🔒 **Security Authorization:**")
+                    due_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"due_pin_{sel_due_id}")
+                    
+                    db_up_c, db_del_c = st.columns(2)
+                    if db_up_c.button("🔄 Update Due Record", key=f"btn_up_due_{sel_due_id}", use_container_width=True):
+                        if due_auth_pin == SQLManager.get_pin():
+                            conn = SQLManager.get_connection()
+                            conn.cursor().execute("""
+                                UPDATE Udhar_Baki SET 
+                                Date = ?, Customer_Name = ?, Mobile_Number = ?, Service_Details = ?, 
+                                Total_Amount = ?, Paid_Amount = ?, Pending_Amount = ?, Due_Date = ?, Status = ?
+                                WHERE ID = ?
+                            """, (up_d_date, up_d_name, str(up_d_phone).strip(), up_d_serv, up_d_tot, up_d_paid, up_d_pending, up_d_due_dt, up_d_stat, sel_due_id))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"✅ Due Record #{sel_due_id} updated successfully in SQL!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+                            
+                    if db_del_c.button("🗑️ Delete Due Record", key=f"btn_del_due_{sel_due_id}", type="primary", use_container_width=True):
+                        if due_auth_pin == SQLManager.get_pin():
+                            conn = SQLManager.get_connection()
+                            conn.cursor().execute("DELETE FROM Udhar_Baki WHERE ID = ?", (sel_due_id,))
+                            conn.commit()
+                            conn.close()
+                            st.warning(f"🗑️ Due Record #{sel_due_id} deleted from SQL Database!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
+        else:
+            st.info("No due records found to edit.")
+
+# ----------------- 5. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
@@ -1201,7 +1286,7 @@ elif menu == "📄 Reports & PDF":
     with t3:
         st.dataframe(f_b, use_container_width=True)
 
-# ----------------- 5. OPENING BALANCE -----------------
+# ----------------- 6. OPENING BALANCE -----------------
 elif menu == "🏦 Opening Balance":
     st.subheader("🏦 Opening Balance Setup (SQL)")
     curr_c, curr_b = SQLManager.get_opening_balance()
@@ -1217,7 +1302,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY (SAFE GETTERS TO PREVENT KEYERROR) -----------------
+# ----------------- 7. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast (SQL)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -1326,7 +1411,6 @@ elif menu == "👥 Customers Directory":
         st.markdown("##### 📢 Bulk Broadcast & Promotion List")
         df_c = SQLManager.get_df("Customers")
         if not df_c.empty:
-            # Fallback for target service column
             serv_col_name = "Primary Service" if "Primary Service" in df_c.columns else df_c.columns[min(5, len(df_c.columns)-1)]
             service_unique_list = list(df_c[serv_col_name].dropna().unique()) if serv_col_name in df_c.columns else []
             
@@ -1348,7 +1432,7 @@ elif menu == "👥 Customers Directory":
         else:
             st.info("No client records available.")
 
-# ----------------- 7. INCOME & EXPENSE MANAGEMENT -----------------
+# ----------------- 8. INCOME & EXPENSE MANAGEMENT -----------------
 elif menu == "💰 Income":
     st.subheader("💰 Income Ledger (SQL)")
     df_i = SQLManager.get_df("Income")
@@ -1361,13 +1445,7 @@ elif menu == "💸 Expenses":
     if not df_e.empty:
         st.dataframe(df_e, use_container_width=True)
 
-elif menu == "📋 Due Collections":
-    st.subheader("📋 Due Collections Ledger (SQL)")
-    df_b = SQLManager.get_df("Udhar_Baki")
-    if not df_b.empty:
-        st.dataframe(df_b, use_container_width=True)
-
-# ----------------- 8. SQL BACKUP & RESTORE -----------------
+# ----------------- 9. SQL BACKUP & RESTORE -----------------
 elif menu == "💾 Backup & Restore (Excel / SQL)":
     st.subheader("💾 Backup & Restore Center (Excel & SQL)")
     st.info("💡 You can export backups to Excel (.xlsx) and restore data from any previous Excel backup file.")
@@ -1445,7 +1523,7 @@ elif menu == "💾 Backup & Restore (Excel / SQL)":
             else:
                 st.error("❌ Incorrect Security PIN!")
 
-# ----------------- 9. SECURITY PIN -----------------
+# ----------------- 10. SECURITY PIN -----------------
 elif menu == "⚙️ Security / Change PIN":
     st.subheader("⚙️ Change Master PIN")
     with st.form("pin_form"):
@@ -1460,4 +1538,4 @@ elif menu == "⚙️ Security / Change PIN":
                 else:
                     st.error("PIN mismatch!")
             else:
-                st.error("Incorrect Current PIN!")
+                st.error("Incorrect Current PIN!")VVV
