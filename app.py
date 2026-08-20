@@ -105,7 +105,6 @@ class SQLManager:
         conn = SQLManager.get_connection()
         c = conn.cursor()
         
-        # 1. Customers Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Customers (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +117,6 @@ class SQLManager:
             )
         """)
 
-        # 2. Invoices Archive Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Invoices_Archive (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +136,6 @@ class SQLManager:
             )
         """)
 
-        # 3. Income Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Income (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,7 +148,6 @@ class SQLManager:
             )
         """)
 
-        # 4. Expense Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Expense (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,7 +158,6 @@ class SQLManager:
             )
         """)
 
-        # 5. Due / Credit Ledger Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Udhar_Baki (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,7 +173,6 @@ class SQLManager:
             )
         """)
 
-        # 6. Task Reminders Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Task_Reminder (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +185,6 @@ class SQLManager:
             )
         """)
 
-        # 7. System Settings Table
         c.execute("""
             CREATE TABLE IF NOT EXISTS Settings (
                 Key TEXT PRIMARY KEY,
@@ -200,7 +193,6 @@ class SQLManager:
             )
         """)
 
-        # Default Settings setup
         c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Cash_Opening_Balance', '0.0', ?)", (datetime.now().strftime("%Y-%m-%d"),))
         c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Bank_Opening_Balance', '0.0', ?)", (datetime.now().strftime("%Y-%m-%d"),))
         c.execute("INSERT OR IGNORE INTO Settings (Key, Value, Updated_Date) VALUES ('Master_PIN', ?, ?)", (DEFAULT_PIN, datetime.now().strftime("%Y-%m-%d")))
@@ -215,7 +207,6 @@ class SQLManager:
         try:
             df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
             conn.close()
-            # Standardize Column Names for consistency
             df.columns = [c.replace('_', ' ') if c != 'ID' else 'ID' for c in df.columns]
             return df
         except Exception:
@@ -283,7 +274,6 @@ class SQLManager:
 
     @staticmethod
     def export_sqlite_to_excel_buffer():
-        """Creates an Excel buffer with all SQL tables as sheets"""
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as writer:
             for tbl in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
@@ -291,6 +281,27 @@ class SQLManager:
                 df.to_excel(writer, sheet_name=tbl, index=False)
         buf.seek(0)
         return buf
+
+    @staticmethod
+    def import_excel_to_sqlite(uploaded_file):
+        """Reads Excel file sheets and imports into SQLite database"""
+        try:
+            excel_data = pd.read_excel(uploaded_file, sheet_name=None)
+            conn = SQLManager.get_connection()
+            
+            for sheet_name, df in excel_data.items():
+                target_table = sheet_name.replace(" ", "_")
+                df.columns = [c.replace(" ", "_") for c in df.columns]
+                
+                # Check if table is valid
+                if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
+                    df.to_sql(target_table, conn, if_exists="replace", index=False)
+            
+            conn.commit()
+            conn.close()
+            return True, "Success"
+        except Exception as e:
+            return False, str(e)
 
 # Initialize SQL Database
 SQLManager.init_db()
@@ -364,7 +375,7 @@ menu_items = [
     ("💰 Income", "View & Manage Income"),
     ("💸 Expenses", "View & Manage Expenses"),
     ("📋 Due Collections", "Customer Pending Dues"),
-    ("💾 SQL Backup & Restore", "Export / Import SQL & Excel Database"),
+    ("💾 Backup & Restore (Excel / SQL)", "Export / Import Excel & SQL Database"),
     ("⚙️ Security / Change PIN", "Change Master PIN")
 ]
 
@@ -378,7 +389,6 @@ for label, desc in menu_items:
 menu = st.session_state.current_page
 st.sidebar.markdown("---")
 
-# Instant Excel Backup Download from SQL
 excel_buf = SQLManager.export_sqlite_to_excel_buffer()
 st.sidebar.download_button(
     "📥 Quick Excel Backup", 
@@ -755,10 +765,8 @@ elif menu == "🧾 Generate Bill / Voucher":
 
         if st.button("💾 Generate Bill & Save to SQL", type="primary", use_container_width=True):
             if cust_name and total_bill > 0 and s1:
-                # 1. SQL Sync Customer
                 SQLManager.sync_customer(cust_name, cust_phone, s1, remarks)
                 
-                # 2. Insert into Invoices_Archive
                 conn = SQLManager.get_connection()
                 c = conn.cursor()
                 c.execute("""
@@ -767,12 +775,10 @@ elif menu == "🧾 Generate Bill / Voucher":
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (bill_no, bill_date, cust_name.strip(), str(cust_phone).strip(), s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks))
                 
-                # 3. Income
                 if rec_amt > 0:
                     c.execute("INSERT INTO Income (Date, Customer_Person, Work_Details, Amount, Payment_Mode, Notes) VALUES (?, ?, ?, ?, ?, ?)",
                               (bill_date, cust_name.strip(), f"Bill #{bill_no}: {item_desc}", rec_amt, pay_mode, f"Mob: {cust_phone}"))
                 
-                # 4. Due
                 if baki_amt > 0:
                     c.execute("INSERT INTO Udhar_Baki (Date, Customer_Name, Mobile_Number, Service_Details, Total_Amount, Paid_Amount, Pending_Amount, Due_Date, Status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')",
                               (bill_date, cust_name.strip(), str(cust_phone).strip(), item_desc, total_bill, rec_amt, baki_amt, due_date))
@@ -977,7 +983,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled in SQL!")
                     st.rerun()
 
-# ----------------- 4. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
+# ----------------- 4. REPORTS & PDF -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
@@ -1326,55 +1332,83 @@ elif menu == "📋 Due Collections":
     if not df_b.empty:
         st.dataframe(df_b, use_container_width=True)
 
-# ----------------- 8. SQL BACKUP & RESTORE -----------------
-elif menu == "💾 SQL Backup & Restore":
-    st.subheader("💾 SQL Database Backup & Restore Center")
-    st.info("💡 SQL database offers zero data-loss reliability. You can backup as `.db` or `.xlsx` at any time.")
+# ----------------- 8. BACKUP & RESTORE (EXCEL & SQL) -----------------
+elif menu == "💾 Backup & Restore (Excel / SQL)":
+    st.subheader("💾 Backup & Restore Center (Excel & SQL)")
+    st.info("💡 You can export backups to Excel (.xlsx) and restore data from any previous Excel backup file.")
     
-    b_tab1, b_tab2 = st.tabs(["📥 Download SQL & Excel Backup", "📤 Restore SQL Database (.db)"])
+    b_tab1, b_tab2, b_tab3 = st.tabs([
+        "📥 Download Backups", 
+        "📤 Restore from Excel File (.xlsx)",
+        "💾 Restore SQL Database File (.db)"
+    ])
     
+    # 1. Download Backup
     with b_tab1:
         st.markdown("##### 📥 Export All Accounting Records")
         c_bk1, c_bk2 = st.columns(2)
         
-        # 1. Direct SQLite Database Backup (.db)
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE, "rb") as f:
-                c_bk1.download_button(
-                    label="💾 Download SQLite Database File (.db)",
-                    data=f,
-                    file_name=f"rojmed_sql_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
-                    mime="application/x-sqlite3",
-                    type="primary",
-                    use_container_width=True
-                )
-                
-        # 2. Universal Excel Backup (.xlsx)
+        # Excel Backup (.xlsx)
         excel_backup_data = SQLManager.export_sqlite_to_excel_buffer()
-        c_bk2.download_button(
+        c_bk1.download_button(
             label="📊 Download Full Excel Workbook (.xlsx)",
             data=excel_backup_data,
             file_name=f"Rojmed_Excel_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
             use_container_width=True
         )
-            
+        
+        # SQLite DB Backup (.db)
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, "rb") as f:
+                c_bk2.download_button(
+                    label="💾 Download SQLite Database File (.db)",
+                    data=f,
+                    file_name=f"rojmed_sql_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+                    mime="application/x-sqlite3",
+                    use_container_width=True
+                )
+
+    # 2. Restore from Excel (.xlsx) - MAIN FEATURE
     with b_tab2:
-        st.markdown("##### 📤 Restore SQLite Database File")
-        uploaded_db = st.file_uploader("Choose SQLite Database File (.db):", type=["db", "sqlite", "sqlite3"])
-        rest_pin = st.text_input("Enter Master Security PIN to Confirm Restore:", type="password", key="rest_pin_inp")
+        st.markdown("##### 📤 Upload & Restore from Excel File (.xlsx)")
+        st.caption("Upload your previously downloaded Excel backup file. All sheets will be imported back into SQL Database.")
+        
+        uploaded_excel = st.file_uploader("Choose Backup Excel File (.xlsx):", type=["xlsx"], key="restore_excel_uploader")
+        excel_pin = st.text_input("Enter Master Security PIN to Confirm Restore:", type="password", key="rest_pin_excel")
+        
+        if st.button("🚀 Restore Data from Excel File", type="primary", use_container_width=True):
+            if excel_pin == SQLManager.get_pin():
+                if uploaded_excel is not None:
+                    success, msg = SQLManager.import_excel_to_sqlite(uploaded_excel)
+                    if success:
+                        st.success("✅ Excel data successfully imported and restored into SQL Database!")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Error restoring Excel data: {msg}")
+                else:
+                    st.error("Please choose a valid `.xlsx` Excel backup file.")
+            else:
+                st.error("❌ Incorrect Security PIN! Action denied.")
+
+    # 3. Restore from SQLite (.db)
+    with b_tab3:
+        st.markdown("##### 💾 Restore SQLite Database File (.db)")
+        uploaded_db = st.file_uploader("Choose SQLite Database File (.db):", type=["db", "sqlite", "sqlite3"], key="restore_db_uploader")
+        db_pin = st.text_input("Enter Master Security PIN:", type="password", key="rest_pin_db")
         
         if st.button("🚀 Restore SQL Database", type="primary", use_container_width=True):
-            if rest_pin == SQLManager.get_pin():
+            if db_pin == SQLManager.get_pin():
                 if uploaded_db is not None:
                     with open(DB_FILE, "wb") as f:
                         f.write(uploaded_db.getbuffer())
-                    st.success("✅ SQL Database successfully restored! All previous tables and records are loaded.")
+                    st.success("✅ SQL Database file restored!")
                     st.rerun()
                 else:
-                    st.error("Please select a valid `.db` file to upload.")
+                    st.error("Please choose a valid `.db` file.")
             else:
-                st.error("❌ Incorrect Security PIN! Action denied.")
+                st.error("❌ Incorrect Security PIN!")
 
 # ----------------- 9. SECURITY PIN -----------------
 elif menu == "⚙️ Security / Change PIN":
