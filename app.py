@@ -207,7 +207,26 @@ class SQLManager:
         try:
             df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
             conn.close()
-            df.columns = [c.replace('_', ' ') if c != 'ID' else 'ID' for c in df.columns]
+            if df is not None and not df.empty:
+                # Standardize column headers to space-separated format
+                df.columns = [c.replace('_', ' ').strip() if c != 'ID' else 'ID' for c in df.columns]
+                
+                # Alias normalization for Customers table
+                if table_name.lower() == "customers":
+                    if "Primary Service" not in df.columns:
+                        for alt in ["Primary Service / Purpose", "Primary_Service", "PrimaryService", "Service"]:
+                            if alt in df.columns:
+                                df["Primary Service"] = df[alt]
+                                break
+                        if "Primary Service" not in df.columns:
+                            df["Primary Service"] = "General"
+                    if "City Address" not in df.columns:
+                        for alt in ["City/Address", "City_Address", "Address", "City"]:
+                            if alt in df.columns:
+                                df["City Address"] = df[alt]
+                                break
+                        if "City Address" not in df.columns:
+                            df["City Address"] = "Kadi"
             return df
         except Exception:
             conn.close()
@@ -284,16 +303,19 @@ class SQLManager:
 
     @staticmethod
     def import_excel_to_sqlite(uploaded_file):
-        """Reads Excel file sheets and imports into SQLite database"""
         try:
             excel_data = pd.read_excel(uploaded_file, sheet_name=None)
             conn = SQLManager.get_connection()
             
             for sheet_name, df in excel_data.items():
                 target_table = sheet_name.replace(" ", "_")
-                df.columns = [c.replace(" ", "_") for c in df.columns]
+                # Normalize column mappings for backward compatibility
+                df.columns = [c.replace(" ", "_").replace("/", "_") for c in df.columns]
+                if "Primary_Service___Purpose" in df.columns:
+                    df = df.rename(columns={"Primary_Service___Purpose": "Primary_Service"})
+                if "City_Address" not in df.columns and "City_Address" in df.columns:
+                    df = df.rename(columns={"City_Address": "City_Address"})
                 
-                # Check if table is valid
                 if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
                     df.to_sql(target_table, conn, if_exists="replace", index=False)
             
@@ -417,11 +439,11 @@ def search_customer_profile(search_text):
     df_b = SQLManager.get_df("Udhar_Baki")
     
     matched_cust = None
-    if not df_c.empty:
+    if not df_c.empty and "Mobile Number" in df_c:
         m_phone = df_c[df_c["Mobile Number"].astype(str).str.strip() == clean_q]
         if not m_phone.empty:
             matched_cust = m_phone.iloc[0]
-        else:
+        elif "Customer Name" in df_c:
             m_name = df_c[df_c["Customer Name"].astype(str).str.lower() == clean_q.lower()]
             if not m_name.empty:
                 matched_cust = m_name.iloc[0]
@@ -429,10 +451,10 @@ def search_customer_profile(search_text):
     total_due = 0.0
     due_records = []
     if not df_b.empty and "Pending Amount" in df_b:
-        m_due = df_b[
-            (df_b["Mobile Number"].astype(str).str.strip() == clean_q) |
-            (df_b["Customer Name"].astype(str).str.lower() == clean_q.lower())
-        ]
+        cond = (df_b["Mobile Number"].astype(str).str.strip() == clean_q) if "Mobile Number" in df_b else pd.Series([False]*len(df_b))
+        if "Customer Name" in df_b:
+            cond = cond | (df_b["Customer Name"].astype(str).str.lower() == clean_q.lower())
+        m_due = df_b[cond]
         active_dues = m_due[m_due["Pending Amount"] > 0]
         if not active_dues.empty:
             total_due = float(active_dues["Pending Amount"].sum())
@@ -683,8 +705,9 @@ elif menu == "🧾 Generate Bill / Voucher":
         
         selected_from_list = None
         if not df_all_cust.empty:
+            serv_col = "Primary Service" if "Primary Service" in df_all_cust else df_all_cust.columns[min(5, len(df_all_cust.columns)-1)]
             cust_quick_list = ["-- Quick Choose Registered Client (Optional) --"] + [
-                f"{r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) - {r.get('Primary Service', '')}" 
+                f"{r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) - {r.get(serv_col, '')}" 
                 for _, r in df_all_cust.iterrows()
             ]
             chosen_c = col_s_opt1.selectbox("Search from Directory:", cust_quick_list)
@@ -705,13 +728,17 @@ elif menu == "🧾 Generate Bill / Voucher":
             matched_profile, live_due, due_records = search_customer_profile(search_term)
             
             if matched_profile is not None or live_due > 0:
+                p_name = matched_profile.get('Customer Name') if matched_profile is not None else cust_name
+                p_phone = matched_profile.get('Mobile Number') if matched_profile is not None else cust_phone
+                p_city = matched_profile.get('City Address', 'Kadi') if matched_profile is not None else 'Kadi'
+                p_serv = matched_profile.get('Primary Service', 'General') if matched_profile is not None else 'General'
                 st.markdown(f"""
                     <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin: 10px 0;">
-                        <h4 style="color: #15803D; margin: 0;">✅ Client Match Found: {matched_profile.get('Customer Name') if matched_profile is not None else cust_name}</h4>
+                        <h4 style="color: #15803D; margin: 0;">✅ Client Match Found: {p_name}</h4>
                         <p style="margin: 3px 0 0 0; font-size: 13px; color: #334155;">
-                            📞 Mobile: <b>{matched_profile.get('Mobile Number') if matched_profile is not None else cust_phone}</b> | 
-                            📍 City: <b>{matched_profile.get('City Address', 'Kadi') if matched_profile is not None else 'Kadi'}</b> | 
-                            💼 Previous Service: <b>{matched_profile.get('Primary Service', 'General') if matched_profile is not None else 'General'}</b>
+                            📞 Mobile: <b>{p_phone}</b> | 
+                            📍 City: <b>{p_city}</b> | 
+                            💼 Previous Service: <b>{p_serv}</b>
                         </p>
                     </div>
                 """, unsafe_allow_html=True)
@@ -983,7 +1010,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled in SQL!")
                     st.rerun()
 
-# ----------------- 4. REPORTS & PDF -----------------
+# ----------------- 4. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
@@ -1190,7 +1217,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 6. CUSTOMERS DIRECTORY -----------------
+# ----------------- 6. CUSTOMERS DIRECTORY (SAFE GETTERS TO PREVENT KEYERROR) -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast (SQL)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -1231,12 +1258,11 @@ elif menu == "👥 Customers Directory":
         if not df_c.empty:
             search_query = st.text_input("🔍 Quick Search by Name, Mobile, Address or Service:", "")
             if search_query:
-                filtered_df = df_c[
-                    df_c["Customer Name"].astype(str).str.contains(search_query, case=False, na=False) | 
-                    df_c["Mobile Number"].astype(str).str.contains(search_query, case=False, na=False) |
-                    df_c.get("City Address", pd.Series()).astype(str).str.contains(search_query, case=False, na=False) |
-                    df_c.get("Primary Service", pd.Series()).astype(str).str.contains(search_query, case=False, na=False)
-                ]
+                cond = pd.Series([False]*len(df_c))
+                for col in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"]:
+                    if col in df_c.columns:
+                        cond = cond | df_c[col].astype(str).str.contains(search_query, case=False, na=False)
+                filtered_df = df_c[cond]
             else:
                 filtered_df = df_c
                 
@@ -1300,16 +1326,25 @@ elif menu == "👥 Customers Directory":
         st.markdown("##### 📢 Bulk Broadcast & Promotion List")
         df_c = SQLManager.get_df("Customers")
         if not df_c.empty:
-            sel_aud = st.selectbox("Select Target Audience:", ["All Clients"] + list(df_c["Primary Service"].dropna().unique()))
-            target_df = df_c if sel_aud == "All Clients" else df_c[df_c["Primary Service"] == sel_aud]
+            # Fallback for target service column
+            serv_col_name = "Primary Service" if "Primary Service" in df_c.columns else df_c.columns[min(5, len(df_c.columns)-1)]
+            service_unique_list = list(df_c[serv_col_name].dropna().unique()) if serv_col_name in df_c.columns else []
+            
+            sel_aud = st.selectbox("Select Target Audience:", ["All Clients"] + service_unique_list)
+            target_df = df_c if (sel_aud == "All Clients" or serv_col_name not in df_c.columns) else df_c[df_c[serv_col_name] == sel_aud]
             
             st.write(f"**Total Recipients:** {len(target_df)}")
-            st.dataframe(target_df[["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"]], use_container_width=True)
+            display_cols = [c for c in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"] if c in target_df.columns]
+            st.dataframe(target_df[display_cols], use_container_width=True)
             
             promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.")
             for _, prow in target_df.head(10).iterrows():
-                p_url = f"https://wa.me/91{str(prow['Mobile Number']).strip()}?text={urllib.parse.quote(promo_msg)}"
-                st.markdown(f"👉 **{prow['Customer Name']}** ({prow['Mobile Number']}) - [{prow.get('City Address', 'Kadi')}]: [📲 Send WhatsApp]({p_url})")
+                p_phone = str(prow.get("Mobile Number", "")).strip()
+                p_name = prow.get("Customer Name", "Client")
+                p_city = prow.get("City Address", "Kadi")
+                if p_phone:
+                    p_url = f"https://wa.me/91{p_phone}?text={urllib.parse.quote(promo_msg)}"
+                    st.markdown(f"👉 **{p_name}** ({p_phone}) - [{p_city}]: [📲 Send WhatsApp]({p_url})")
         else:
             st.info("No client records available.")
 
@@ -1332,7 +1367,7 @@ elif menu == "📋 Due Collections":
     if not df_b.empty:
         st.dataframe(df_b, use_container_width=True)
 
-# ----------------- 8. BACKUP & RESTORE (EXCEL & SQL) -----------------
+# ----------------- 8. SQL BACKUP & RESTORE -----------------
 elif menu == "💾 Backup & Restore (Excel / SQL)":
     st.subheader("💾 Backup & Restore Center (Excel & SQL)")
     st.info("💡 You can export backups to Excel (.xlsx) and restore data from any previous Excel backup file.")
@@ -1370,7 +1405,7 @@ elif menu == "💾 Backup & Restore (Excel / SQL)":
                     use_container_width=True
                 )
 
-    # 2. Restore from Excel (.xlsx) - MAIN FEATURE
+    # 2. Restore from Excel (.xlsx)
     with b_tab2:
         st.markdown("##### 📤 Upload & Restore from Excel File (.xlsx)")
         st.caption("Upload your previously downloaded Excel backup file. All sheets will be imported back into SQL Database.")
