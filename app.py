@@ -92,12 +92,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SQL DATABASE MANAGER (COMPLETELY HARDENED) -----------------
+# ----------------- SQL DATABASE MANAGER (FAST & NON-LOCKING) -----------------
 class SQLManager:
     @staticmethod
     def get_connection():
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
         return conn
 
     @staticmethod
@@ -185,7 +189,6 @@ class SQLManager:
             )
         """)
 
-        # Clean Settings table without reserved keywords
         c.execute("""
             CREATE TABLE IF NOT EXISTS Settings (
                 Setting_Key TEXT PRIMARY KEY,
@@ -195,21 +198,6 @@ class SQLManager:
         """)
 
         now_str = datetime.now().strftime("%Y-%m-%d")
-        
-        # Check and migrate legacy settings columns if present
-        try:
-            c.execute("SELECT Setting_Key FROM Settings LIMIT 1")
-        except sqlite3.OperationalError:
-            # Drop malformed legacy table
-            c.execute("DROP TABLE IF EXISTS Settings")
-            c.execute("""
-                CREATE TABLE Settings (
-                    Setting_Key TEXT PRIMARY KEY,
-                    Setting_Value TEXT,
-                    Updated_Date TEXT
-                )
-            """)
-
         c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Cash_Opening_Balance', '0.0', ?)", (now_str,))
         c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Bank_Opening_Balance', '0.0', ?)", (now_str,))
         c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Master_PIN', ?, ?)", (DEFAULT_PIN, now_str))
@@ -226,11 +214,9 @@ class SQLManager:
             conn.close()
             if df is not None and not df.empty:
                 df.columns = [c.replace('_', ' ').strip() if c != 'ID' else 'ID' for c in df.columns]
-                
-                # Normalization for backward compatibility
                 if table_name.lower() == "customers":
                     if "Primary Service" not in df.columns:
-                        for alt in ["Primary Service / Purpose", "Primary_Service", "PrimaryService", "Service"]:
+                        for alt in ["Primary Service / Purpose", "Primary_Service", "Service"]:
                             if alt in df.columns:
                                 df["Primary Service"] = df[alt]
                                 break
@@ -330,15 +316,6 @@ class SQLManager:
             for sheet_name, df in excel_data.items():
                 target_table = sheet_name.replace(" ", "_")
                 df.columns = [c.replace(" ", "_").replace("/", "_") for c in df.columns]
-                
-                # Column alias mappings
-                if "Primary_Service___Purpose" in df.columns:
-                    df = df.rename(columns={"Primary_Service___Purpose": "Primary_Service"})
-                if "Customer_Person" not in df.columns and "Customer_Name" in df.columns and target_table == "Income":
-                    df = df.rename(columns={"Customer_Name": "Customer_Person"})
-                if "Key" in df.columns and target_table == "Settings":
-                    df = df.rename(columns={"Key": "Setting_Key", "Value": "Setting_Value"})
-                
                 if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
                     df.to_sql(target_table, conn, if_exists="replace", index=False)
             
@@ -756,7 +733,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 p_city = matched_profile.get('City Address', 'Kadi') if matched_profile is not None else 'Kadi'
                 p_serv = matched_profile.get('Primary Service', 'General') if matched_profile is not None else 'General'
                 st.markdown(f"""
-                    <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin-0px 0;">
+                    <div style="background: #F0FDF4; border-left: 5px solid #16A34A; padding: 12px 16px; border-radius: 8px; margin: 10px 0;">
                         <h4 style="color: #15803D; margin: 0;">✅ Client Match Found: {p_name}</h4>
                         <p style="margin: 3px 0 0 0; font-size: 13px; color: #334155;">
                             📞 Mobile: <b>{p_phone}</b> | 
