@@ -2,35 +2,29 @@ import os
 import urllib.parse
 from datetime import datetime, time
 import io
-import sqlite3
 import pandas as pd
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 
-# ReportLab for PDF Bill & Reports
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as PDFImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-# Company Details
 COMPANY_NAME = "HARI OM VISA & UMIYA FINCARE"
 COMPANY_ADDRESS = "F-46 VATSALY STATUS, NR. DHAVAL PLAZA, KADI - 384440"
 COMPANY_MOBILE = "7698564672 / 9714776364"
 COMPANY_TAGLINE = "Visa Consultancy | Insurance & Land Advisor | Property Solution | Daily Accounting"
 
-# Image File Names
 LOGO_VISA = "HARI OM.jpg"
 LOGO_FINCARE = "UMIYA FIN.jpg"
 LOGO_INSURANCE = "HARI OM IL.jpg"
 LOGO_PROPERTY = "SHREE UNIYA.jpg"
 
-DB_FILE = "rojmed_ledger.db"
 DEFAULT_PIN = "1234"
 
-# Page Settings
 st.set_page_config(page_title=COMPANY_NAME, page_icon="💼", layout="wide")
 
-# ----------------- MODERN LIGHT THEME CSS -----------------
 st.markdown("""
     <style>
         .stApp {
@@ -92,241 +86,179 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SQL DATABASE MANAGER (FAST & NON-LOCKING) -----------------
-class SQLManager:
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception:
+    conn = None
+
+DEFAULT_SCHEMAS = {
+    "Customers": ["ID", "Created Date", "Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"],
+    "Invoices_Archive": ["Invoice No", "Date", "Customer Name", "Mobile Number", "Service 1", "Amount 1", "Service 2", "Amount 2", "Total Amount", "Paid Amount", "Pending Amount", "Payment Mode", "Remarks"],
+    "Income": ["ID", "Date", "Customer Person", "Work Details", "Amount", "Payment Mode", "Notes"],
+    "Expense": ["ID", "Date", "Expense Name", "Amount", "Notes"],
+    "Udhar_Baki": ["ID", "Date", "Customer Name", "Mobile Number", "Service Details", "Total Amount", "Paid Amount", "Pending Amount", "Due Date", "Status"],
+    "Task_Reminder": ["ID", "Date", "Time", "Person Name", "Mobile", "Task Details", "Status"],
+    "Settings": ["Setting Key", "Setting Value", "Updated Date"]
+}
+
+class GSheetsManager:
     @staticmethod
-    def get_connection():
-        conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-        except Exception:
-            pass
-        return conn
-
-    @staticmethod
-    def init_db():
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
-        
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Customers (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Created_Date TEXT,
-                Customer_Name TEXT,
-                Mobile_Number TEXT UNIQUE,
-                City_Address TEXT,
-                Primary_Service TEXT,
-                Notes TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Invoices_Archive (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Invoice_No TEXT UNIQUE,
-                Date TEXT,
-                Customer_Name TEXT,
-                Mobile_Number TEXT,
-                Service_1 TEXT,
-                Amount_1 REAL,
-                Service_2 TEXT,
-                Amount_2 REAL,
-                Total_Amount REAL,
-                Paid_Amount REAL,
-                Pending_Amount REAL,
-                Payment_Mode TEXT,
-                Remarks TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Income (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Date TEXT,
-                Customer_Person TEXT,
-                Work_Details TEXT,
-                Amount REAL,
-                Payment_Mode TEXT,
-                Notes TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Expense (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Date TEXT,
-                Expense_Name TEXT,
-                Amount REAL,
-                Notes TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Udhar_Baki (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Date TEXT,
-                Customer_Name TEXT,
-                Mobile_Number TEXT,
-                Service_Details TEXT,
-                Total_Amount REAL,
-                Paid_Amount REAL,
-                Pending_Amount REAL,
-                Due_Date TEXT,
-                Status TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Task_Reminder (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Date TEXT,
-                Time TEXT,
-                Person_Name TEXT,
-                Mobile TEXT,
-                Task_Details TEXT,
-                Status TEXT
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS Settings (
-                Setting_Key TEXT PRIMARY KEY,
-                Setting_Value TEXT,
-                Updated_Date TEXT
-            )
-        """)
-
-        now_str = datetime.now().strftime("%Y-%m-%d")
-        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Cash_Opening_Balance', '0.0', ?)", (now_str,))
-        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Bank_Opening_Balance', '0.0', ?)", (now_str,))
-        c.execute("INSERT OR IGNORE INTO Settings (Setting_Key, Setting_Value, Updated_Date) VALUES ('Master_PIN', ?, ?)", (DEFAULT_PIN, now_str))
-
-        conn.commit()
-        conn.close()
+    def get_df(sheet_name):
+        if conn is not None:
+            try:
+                df = conn.read(worksheet=sheet_name, ttl=0)
+                if df is not None and not df.empty:
+                    df = df.dropna(how="all")
+                    df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
+                    if sheet_name == "Customers":
+                        if "Primary Service" not in df.columns:
+                            for alt in ["Primary Service / Purpose", "Primary Service"]:
+                                if alt in df.columns:
+                                    df["Primary Service"] = df[alt]
+                                    break
+                        if "City Address" not in df.columns:
+                            for alt in ["City/Address", "City Address"]:
+                                if alt in df.columns:
+                                    df["City Address"] = df[alt]
+                                    break
+                    return df
+            except Exception:
+                pass
+        cols = DEFAULT_SCHEMAS.get(sheet_name, ["ID"])
+        return pd.DataFrame(columns=cols)
 
     @staticmethod
-    def get_df(table_name):
-        SQLManager.init_db()
-        conn = SQLManager.get_connection()
-        try:
-            df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
-            conn.close()
-            if df is not None and not df.empty:
-                df.columns = [c.replace('_', ' ').strip() if c != 'ID' else 'ID' for c in df.columns]
-                if table_name.lower() == "customers":
-                    if "Primary Service" not in df.columns:
-                        for alt in ["Primary Service / Purpose", "Primary_Service", "Service"]:
-                            if alt in df.columns:
-                                df["Primary Service"] = df[alt]
-                                break
-                    if "City Address" not in df.columns:
-                        for alt in ["City/Address", "City_Address", "Address", "City"]:
-                            if alt in df.columns:
-                                df["City Address"] = df[alt]
-                                break
-            return df
-        except Exception:
-            conn.close()
-            return pd.DataFrame()
+    def save_df(sheet_name, df):
+        if conn is not None:
+            try:
+                conn.update(worksheet=sheet_name, data=df)
+            except Exception as e:
+                st.error(f"Google Sheets Sync Error: {e}")
+
+    @staticmethod
+    def append_row(sheet_name, row_dict):
+        df = GSheetsManager.get_df(sheet_name)
+        if "ID" in DEFAULT_SCHEMAS.get(sheet_name, []):
+            new_id = 1 if df.empty or "ID" not in df else (int(df["ID"].dropna().max()) + 1 if len(df["ID"].dropna()) > 0 else 1)
+            row_dict["ID"] = new_id
+        clean_row = {k.replace('_', ' ').strip(): v for k, v in row_dict.items()}
+        new_row_df = pd.DataFrame([clean_row])
+        df = pd.concat([df, new_row_df], ignore_index=True)
+        GSheetsManager.save_df(sheet_name, df)
+        return row_dict.get("ID", 1)
+
+    @staticmethod
+    def update_row(sheet_name, row_id, updated_dict):
+        df = GSheetsManager.get_df(sheet_name)
+        if not df.empty and "ID" in df.columns:
+            idx = df.index[df["ID"].astype(str) == str(row_id)].tolist()
+            if idx:
+                for k, v in updated_dict.items():
+                    clean_k = k.replace('_', ' ').strip()
+                    df.at[idx[0], clean_k] = v
+                GSheetsManager.save_df(sheet_name, df)
+
+    @staticmethod
+    def delete_row(sheet_name, row_id):
+        df = GSheetsManager.get_df(sheet_name)
+        if not df.empty and "ID" in df.columns:
+            df = df[df["ID"].astype(str) != str(row_id)]
+            GSheetsManager.save_df(sheet_name, df)
+
+    @staticmethod
+    def update_invoice(invoice_no, updated_dict):
+        df = GSheetsManager.get_df("Invoices_Archive")
+        if not df.empty and "Invoice No" in df.columns:
+            idx = df.index[df["Invoice No"].astype(str) == str(invoice_no)].tolist()
+            if idx:
+                for k, v in updated_dict.items():
+                    clean_k = k.replace('_', ' ').strip()
+                    df.at[idx[0], clean_k] = v
+                GSheetsManager.save_df("Invoices_Archive", df)
+
+    @staticmethod
+    def delete_invoice(invoice_no):
+        df = GSheetsManager.get_df("Invoices_Archive")
+        if not df.empty and "Invoice No" in df.columns:
+            df = df[df["Invoice No"].astype(str) != str(invoice_no)]
+            GSheetsManager.save_df("Invoices_Archive", df)
 
     @staticmethod
     def sync_customer(name, phone, service, remarks=""):
         clean_p = str(phone).strip()
         if not clean_p or not name:
             return
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
+        df_c = GSheetsManager.get_df("Customers")
         now_dt = datetime.now().strftime("%Y-%m-%d")
-        
-        c.execute("SELECT ID FROM Customers WHERE Mobile_Number = ?", (clean_p,))
-        row = c.fetchone()
-        if row:
-            c.execute("UPDATE Customers SET Customer_Name = ?, Primary_Service = ? WHERE ID = ?", (name.strip(), service, row['ID']))
-        else:
-            c.execute("INSERT INTO Customers (Created_Date, Customer_Name, Mobile_Number, City_Address, Primary_Service, Notes) VALUES (?, ?, ?, ?, ?, ?)",
-                      (now_dt, name.strip(), clean_p, 'Kadi', service, remarks))
-        conn.commit()
-        conn.close()
+        if not df_c.empty and "Mobile Number" in df_c.columns:
+            matched = df_c[df_c["Mobile Number"].astype(str).str.strip() == clean_p]
+            if not matched.empty:
+                c_id = matched.iloc[0]["ID"]
+                GSheetsManager.update_row("Customers", c_id, {"Customer Name": name.strip(), "Primary Service": service})
+                return
+        GSheetsManager.append_row("Customers", {
+            "Created Date": now_dt,
+            "Customer Name": name.strip(),
+            "Mobile Number": clean_p,
+            "City Address": "Kadi",
+            "Primary Service": service,
+            "Notes": remarks
+        })
 
     @staticmethod
     def get_pin():
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
-        try:
-            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Master_PIN'")
-            row = c.fetchone()
-            conn.close()
-            return str(row['Setting_Value']).strip() if row else DEFAULT_PIN
-        except Exception:
-            conn.close()
-            return DEFAULT_PIN
+        df_s = GSheetsManager.get_df("Settings")
+        if not df_s.empty and "Setting Key" in df_s.columns and "Setting Value" in df_s.columns:
+            row = df_s[df_s["Setting Key"] == "Master_PIN"]
+            if not row.empty:
+                return str(row.iloc[0]["Setting Value"]).strip()
+        return DEFAULT_PIN
 
     @staticmethod
     def set_pin(new_pin):
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
-        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Master_PIN'", (str(new_pin).strip(), datetime.now().strftime("%Y-%m-%d")))
-        conn.commit()
-        conn.close()
+        df_s = GSheetsManager.get_df("Settings")
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        if df_s.empty or "Setting Key" not in df_s.columns:
+            df_s = pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": str(new_pin).strip(), "Updated Date": now_str}])
+        else:
+            if "Master_PIN" in df_s["Setting Key"].values:
+                df_s.loc[df_s["Setting Key"] == "Master_PIN", "Setting Value"] = str(new_pin).strip()
+                df_s.loc[df_s["Setting Key"] == "Master_PIN", "Updated Date"] = now_str
+            else:
+                df_s = pd.concat([df_s, pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": str(new_pin).strip(), "Updated Date": now_str}])], ignore_index=True)
+        GSheetsManager.save_df("Settings", df_s)
 
     @staticmethod
     def get_opening_balance():
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
-        try:
-            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Cash_Opening_Balance'")
-            row_c = c.fetchone()
-            c.execute("SELECT Setting_Value FROM Settings WHERE Setting_Key = 'Bank_Opening_Balance'")
-            row_b = c.fetchone()
-            conn.close()
-            cash_op = float(row_c['Setting_Value']) if row_c else 0.0
-            bank_op = float(row_b['Setting_Value']) if row_b else 0.0
-            return cash_op, bank_op
-        except Exception:
-            conn.close()
-            return 0.0, 0.0
+        df_s = GSheetsManager.get_df("Settings")
+        cash_op, bank_op = 0.0, 0.0
+        if not df_s.empty and "Setting Key" in df_s.columns and "Setting Value" in df_s.columns:
+            rc = df_s[df_s["Setting Key"] == "Cash_Opening_Balance"]
+            rb = df_s[df_s["Setting Key"] == "Bank_Opening_Balance"]
+            if not rc.empty and pd.notna(rc.iloc[0]["Setting Value"]):
+                cash_op = float(rc.iloc[0]["Setting Value"])
+            if not rb.empty and pd.notna(rb.iloc[0]["Setting Value"]):
+                bank_op = float(rb.iloc[0]["Setting Value"])
+        return cash_op, bank_op
 
     @staticmethod
     def set_opening_balance(cash_op, bank_op):
-        conn = SQLManager.get_connection()
-        c = conn.cursor()
-        dt = datetime.now().strftime("%Y-%m-%d")
-        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Cash_Opening_Balance'", (str(cash_op), dt))
-        c.execute("UPDATE Settings SET Setting_Value = ?, Updated_Date = ? WHERE Setting_Key = 'Bank_Opening_Balance'", (str(bank_op), dt))
-        conn.commit()
-        conn.close()
-
-    @staticmethod
-    def export_sqlite_to_excel_buffer():
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            for tbl in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
-                df = SQLManager.get_df(tbl)
-                df.to_excel(writer, sheet_name=tbl, index=False)
-        buf.seek(0)
-        return buf
-
-    @staticmethod
-    def import_excel_to_sqlite(uploaded_file):
-        try:
-            excel_data = pd.read_excel(uploaded_file, sheet_name=None)
-            conn = SQLManager.get_connection()
-            
-            for sheet_name, df in excel_data.items():
-                target_table = sheet_name.replace(" ", "_")
-                df.columns = [c.replace(" ", "_").replace("/", "_") for c in df.columns]
-                if target_table in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
-                    df.to_sql(target_table, conn, if_exists="replace", index=False)
-            
-            conn.commit()
-            conn.close()
-            return True, "Success"
-        except Exception as e:
-            return False, str(e)
-
-# Initialize SQL Database
-SQLManager.init_db()
+        df_s = GSheetsManager.get_df("Settings")
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        recs = [
+            {"Setting Key": "Cash_Opening_Balance", "Setting Value": str(cash_op), "Updated Date": now_str},
+            {"Setting Key": "Bank_Opening_Balance", "Setting Value": str(bank_op), "Updated Date": now_str}
+        ]
+        if df_s.empty or "Setting Key" not in df_s.columns:
+            df_s = pd.DataFrame(recs)
+        else:
+            for r in recs:
+                if r["Setting Key"] in df_s["Setting Key"].values:
+                    df_s.loc[df_s["Setting Key"] == r["Setting Key"], "Setting Value"] = r["Setting Value"]
+                    df_s.loc[df_s["Setting Key"] == r["Setting Key"], "Updated Date"] = now_str
+                else:
+                    df_s = pd.concat([df_s, pd.DataFrame([r])], ignore_index=True)
+        GSheetsManager.save_df("Settings", df_s)
 
 def render_top_logos():
     with st.container():
@@ -353,7 +285,6 @@ def render_top_logos():
                 st.image(LOGO_PROPERTY, use_container_width=True)
         st.markdown("<hr style='margin: 12px 0 20px 0; border: 0; height: 1px; background: #E2E8F0;'>", unsafe_allow_html=True)
 
-# ----------------- LOGIN SCREEN -----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -363,26 +294,25 @@ if not st.session_state.logged_in:
     with col_c2:
         st.markdown("""
             <div style="background: #FFFFFF; padding: 25px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Secure SQL Ledger Login</h3>
-                <p style="color: #64748B; font-size: 13px;">Powered by High-Performance Relational SQL Database.</p>
+                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Secure Cloud Ledger Login</h3>
+                <p style="color: #64748B; font-size: 13px;">Connected directly to Google Sheets Cloud Database.</p>
             </div>
         """, unsafe_allow_html=True)
         st.write("")
         entered_pin = st.text_input("Enter 4-Digit Security PIN:", type="password", max_chars=8)
         
         if st.button("🔓 Unlock & Login", type="primary", use_container_width=True):
-            if entered_pin == SQLManager.get_pin():
+            if entered_pin == GSheetsManager.get_pin():
                 st.session_state.logged_in = True
                 st.success("Access Granted!")
                 st.rerun()
             else:
                 st.error("❌ Invalid PIN! Please try again.")
-        st.caption(f"Default setup PIN is: `{DEFAULT_PIN}` (Change it in Security settings).")
+        st.caption(f"Default setup PIN is: `{DEFAULT_PIN}`")
     st.stop()
 
 render_top_logos()
 
-# ----------------- NAVIGATION MENU -----------------
 if "current_page" not in st.session_state:
     st.session_state.current_page = "📊 Dashboard"
 
@@ -397,7 +327,7 @@ menu_items = [
     ("👥 Customers Directory", "Manage Clients & Broadcasts"),
     ("💰 Income", "View & Manage Income"),
     ("💸 Expenses", "View & Manage Expenses"),
-    ("💾 Backup & Restore (Excel / SQL)", "Export / Import Excel & SQL Database"),
+    ("💾 Cloud Excel Backup", "Download Complete Data"),
     ("⚙️ Security / Change PIN", "Change Master PIN")
 ]
 
@@ -410,15 +340,6 @@ for label, desc in menu_items:
 
 menu = st.session_state.current_page
 st.sidebar.markdown("---")
-
-excel_buf = SQLManager.export_sqlite_to_excel_buffer()
-st.sidebar.download_button(
-    "📥 Quick Excel Backup", 
-    data=excel_buf, 
-    file_name=f"SQL_Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", 
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-    use_container_width=True
-)
 
 if st.sidebar.button("🔒 Logout System", use_container_width=True):
     st.session_state.logged_in = False
@@ -435,29 +356,29 @@ def search_customer_profile(search_text):
     if not search_text:
         return None, 0.0, []
     clean_q = str(search_text).strip()
-    df_c = SQLManager.get_df("Customers")
-    df_b = SQLManager.get_df("Udhar_Baki")
+    df_c = GSheetsManager.get_df("Customers")
+    df_b = GSheetsManager.get_df("Udhar_Baki")
     
     matched_cust = None
-    if not df_c.empty and "Mobile Number" in df_c:
+    if not df_c.empty and "Mobile Number" in df_c.columns:
         m_phone = df_c[df_c["Mobile Number"].astype(str).str.strip() == clean_q]
         if not m_phone.empty:
             matched_cust = m_phone.iloc[0]
-        elif "Customer Name" in df_c:
+        elif "Customer Name" in df_c.columns:
             m_name = df_c[df_c["Customer Name"].astype(str).str.lower() == clean_q.lower()]
             if not m_name.empty:
                 matched_cust = m_name.iloc[0]
                 
     total_due = 0.0
     due_records = []
-    if not df_b.empty and "Pending Amount" in df_b:
-        cond = (df_b["Mobile Number"].astype(str).str.strip() == clean_q) if "Mobile Number" in df_b else pd.Series([False]*len(df_b))
-        if "Customer Name" in df_b:
+    if not df_b.empty and "Pending Amount" in df_b.columns:
+        cond = (df_b["Mobile Number"].astype(str).str.strip() == clean_q) if "Mobile Number" in df_b.columns else pd.Series([False]*len(df_b))
+        if "Customer Name" in df_b.columns:
             cond = cond | (df_b["Customer Name"].astype(str).str.lower() == clean_q.lower())
         m_due = df_b[cond]
-        active_dues = m_due[m_due["Pending Amount"] > 0]
+        active_dues = m_due[pd.to_numeric(m_due["Pending Amount"], errors='coerce') > 0]
         if not active_dues.empty:
-            total_due = float(active_dues["Pending Amount"].sum())
+            total_due = float(pd.to_numeric(active_dues["Pending Amount"], errors='coerce').sum())
             due_records = active_dues
             
     return matched_cust, total_due, due_records
@@ -518,10 +439,10 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
 
 # ----------------- 1. DASHBOARD -----------------
 if menu == "📊 Dashboard":
-    st.subheader("📊 Business Overview (SQL Database)")
+    st.subheader("📊 Business Overview (Google Sheets Live)")
     
-    df_rem_all = SQLManager.get_df("Task_Reminder")
-    if not df_rem_all.empty and "Status" in df_rem_all:
+    df_rem_all = GSheetsManager.get_df("Task_Reminder")
+    if not df_rem_all.empty and "Status" in df_rem_all.columns:
         pending_tasks = df_rem_all[df_rem_all["Status"] == "Pending"]
         if not pending_tasks.empty:
             st.markdown(f"""
@@ -542,27 +463,24 @@ if menu == "📊 Dashboard":
                 else:
                     col_t4.write("-")
                 if col_t5.button("✅ Complete", key=f"dash_comp_{t_id}"):
-                    conn = SQLManager.get_connection()
-                    conn.cursor().execute("UPDATE Task_Reminder SET Status = 'Completed' WHERE ID = ?", (t_id,))
-                    conn.commit()
-                    conn.close()
+                    GSheetsManager.update_row("Task_Reminder", t_id, {"Status": "Completed"})
                     st.success("Task Completed!")
                     st.rerun()
             st.divider()
 
-    df_inc = SQLManager.get_df("Income")
-    df_exp = SQLManager.get_df("Expense")
-    df_baki = SQLManager.get_df("Udhar_Baki")
-    df_cust = SQLManager.get_df("Customers")
+    df_inc = GSheetsManager.get_df("Income")
+    df_exp = GSheetsManager.get_df("Expense")
+    df_baki = GSheetsManager.get_df("Udhar_Baki")
+    df_cust = GSheetsManager.get_df("Customers")
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    today_inc = df_inc[df_inc["Date"] == today_str]["Amount"].sum() if not df_inc.empty and "Date" in df_inc and "Amount" in df_inc else 0.0
-    total_inc = df_inc["Amount"].sum() if not df_inc.empty and "Amount" in df_inc else 0.0
-    today_exp = df_exp[df_exp["Date"] == today_str]["Amount"].sum() if not df_exp.empty and "Date" in df_exp and "Amount" in df_exp else 0.0
-    total_exp = df_exp["Amount"].sum() if not df_exp.empty and "Amount" in df_exp else 0.0
-    total_baki = df_baki["Pending Amount"].sum() if not df_baki.empty and "Pending Amount" in df_baki else 0.0
+    today_inc = pd.to_numeric(df_inc[df_inc["Date"] == today_str]["Amount"], errors='coerce').sum() if not df_inc.empty and "Date" in df_inc.columns else 0.0
+    total_inc = pd.to_numeric(df_inc["Amount"], errors='coerce').sum() if not df_inc.empty and "Amount" in df_inc.columns else 0.0
+    today_exp = pd.to_numeric(df_exp[df_exp["Date"] == today_str]["Amount"], errors='coerce').sum() if not df_exp.empty and "Date" in df_exp.columns else 0.0
+    total_exp = pd.to_numeric(df_exp["Amount"], errors='coerce').sum() if not df_exp.empty and "Amount" in df_exp.columns else 0.0
+    total_baki = pd.to_numeric(df_baki["Pending Amount"], errors='coerce').sum() if not df_baki.empty and "Pending Amount" in df_baki.columns else 0.0
     
-    cash_op, bank_op = SQLManager.get_opening_balance()
+    cash_op, bank_op = GSheetsManager.get_opening_balance()
     tot_op = cash_op + bank_op
     closing_net_balance = tot_op + total_inc - total_exp
     total_cust = len(df_cust) if not df_cust.empty else 0
@@ -615,14 +533,14 @@ if menu == "📊 Dashboard":
             <div class="kpi-card" style="border-left: 5px solid #7C3AED;">
                 <div class="kpi-label">👥 Registered Clients</div>
                 <div class="kpi-value" style="color: #6D28D9;">{total_cust}</div>
-                <div class="kpi-sub">Stored in SQL Database</div>
+                <div class="kpi-sub">Google Sheets Cloud Database</div>
             </div>
         """, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("📋 Pending Collections & Itemized WhatsApp Reminders")
-    if not df_baki.empty and "Pending Amount" in df_baki:
-        pending = df_baki[df_baki["Pending Amount"] > 0]
+    if not df_baki.empty and "Pending Amount" in df_baki.columns:
+        pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
         if not pending.empty:
             for _, r in pending.iterrows():
                 b1, b2, b3, b4, b5, b6 = st.columns([2, 2, 2, 2, 2, 2])
@@ -630,9 +548,10 @@ if menu == "📊 Dashboard":
                 b2.write(f"📞 {r.get('Mobile Number')}")
                 serv_name = str(r.get('Service Details', 'Service'))
                 b3.write(f"🏷️ *{serv_name}*")
-                b4.write(f"Due: **₹ {r.get('Pending Amount'):,.2f}**")
+                due_val = float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce'))
+                b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {r.get('Due Date')}")
-                msg = f"Hello {r.get('Customer Name')}, payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {r.get('Pending Amount'):,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
+                msg = f"Hello {r.get('Customer Name')}, payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {due_val:,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
                 wa_url = f"https://wa.me/91{str(r.get('Mobile Number')).strip()}?text={urllib.parse.quote(msg)}"
                 b6.markdown(f"[📲 Send WhatsApp]({wa_url})", unsafe_allow_html=True)
         else:
@@ -654,17 +573,16 @@ elif menu == "⏰ Task Reminders":
             rtime = st.time_input("⏰ Reminder Time", time(11, 0)).strftime("%I:%M %p")
             if st.form_submit_button("💾 Save Reminder", use_container_width=True):
                 if tdesc and pname:
-                    conn = SQLManager.get_connection()
-                    conn.cursor().execute("INSERT INTO Task_Reminder (Date, Time, Person_Name, Mobile, Task_Details, Status) VALUES (?, ?, ?, ?, ?, 'Pending')",
-                                          (rdate, rtime, pname, rphone, tdesc))
-                    conn.commit()
-                    conn.close()
-                    st.success("Reminder Saved to SQL Database!")
+                    GSheetsManager.append_row("Task_Reminder", {
+                        "Date": rdate, "Time": rtime, "Person Name": pname,
+                        "Mobile": rphone, "Task Details": tdesc, "Status": "Pending"
+                    })
+                    st.success("Reminder Saved to Google Sheets!")
                     st.rerun()
 
     with tab_pending_tasks:
-        df_rem = SQLManager.get_df("Task_Reminder")
-        if not df_rem.empty:
+        df_rem = GSheetsManager.get_df("Task_Reminder")
+        if not df_rem.empty and "Status" in df_rem.columns:
             pending_list = df_rem[df_rem["Status"] == "Pending"]
             for _, r in pending_list.iterrows():
                 r_id = r["ID"]
@@ -673,20 +591,17 @@ elif menu == "⏰ Task Reminders":
                 c2.write(f"👤 {r.get('Person Name')}")
                 c3.write(f"📌 {r.get('Task Details')}")
                 if c4.button("✅ Done", key=f"done_{r_id}"):
-                    conn = SQLManager.get_connection()
-                    conn.cursor().execute("UPDATE Task_Reminder SET Status = 'Completed' WHERE ID = ?", (r_id,))
-                    conn.commit()
-                    conn.close()
+                    GSheetsManager.update_row("Task_Reminder", r_id, {"Status": "Completed"})
                     st.rerun()
 
     with tab_completed_tasks:
-        df_rem = SQLManager.get_df("Task_Reminder")
-        if not df_rem.empty:
+        df_rem = GSheetsManager.get_df("Task_Reminder")
+        if not df_rem.empty and "Status" in df_rem.columns:
             st.dataframe(df_rem[df_rem["Status"] == "Completed"], use_container_width=True)
 
 # ----------------- 3. INVOICE GENERATION -----------------
 elif menu == "🧾 Generate Bill / Voucher":
-    st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers (SQL)")
+    st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers (Cloud)")
     bill_type = st.radio("Select Action:", [
         "Customer Invoice (Income)", 
         "✏️ Edit / Delete Invoices (Requires PIN)",
@@ -696,16 +611,15 @@ elif menu == "🧾 Generate Bill / Voucher":
         "Settle Old Pending Due"
     ], horizontal=True)
     
-    # --- 1. NEW CUSTOMER INVOICE ---
     if bill_type == "Customer Invoice (Income)":
         st.markdown("### 🔍 STEP 1: Quick Customer Lookup & Live Due Detection")
         
-        df_all_cust = SQLManager.get_df("Customers")
+        df_all_cust = GSheetsManager.get_df("Customers")
         col_s_opt1, col_s_opt2 = st.columns([1.5, 2.5])
         
         selected_from_list = None
         if not df_all_cust.empty:
-            serv_col = "Primary Service" if "Primary Service" in df_all_cust else df_all_cust.columns[min(5, len(df_all_cust.columns)-1)]
+            serv_col = "Primary Service" if "Primary Service" in df_all_cust.columns else df_all_cust.columns[min(5, len(df_all_cust.columns)-1)]
             cust_quick_list = ["-- Quick Choose Registered Client (Optional) --"] + [
                 f"{r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) - {r.get(serv_col, '')}" 
                 for _, r in df_all_cust.iterrows()
@@ -790,28 +704,31 @@ elif menu == "🧾 Generate Bill / Voucher":
             
         remarks = st.text_input("Remarks / Notes", "Thank you for choosing our services!")
 
-        if st.button("💾 Generate Bill & Save to SQL", type="primary", use_container_width=True):
+        if st.button("💾 Generate Bill & Save to Cloud", type="primary", use_container_width=True):
             if cust_name and total_bill > 0 and s1:
-                SQLManager.sync_customer(cust_name, cust_phone, s1, remarks)
+                GSheetsManager.sync_customer(cust_name, cust_phone, s1, remarks)
                 
-                conn = SQLManager.get_connection()
-                c = conn.cursor()
-                c.execute("""
-                    INSERT INTO Invoices_Archive 
-                    (Invoice_No, Date, Customer_Name, Mobile_Number, Service_1, Amount_1, Service_2, Amount_2, Total_Amount, Paid_Amount, Pending_Amount, Payment_Mode, Remarks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (bill_no, bill_date, cust_name.strip(), str(cust_phone).strip(), s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks))
+                GSheetsManager.append_row("Invoices_Archive", {
+                    "Invoice No": bill_no, "Date": bill_date, "Customer Name": cust_name.strip(),
+                    "Mobile Number": str(cust_phone).strip(), "Service 1": s1, "Amount 1": amt1,
+                    "Service 2": s2, "Amount 2": amt2, "Total Amount": total_bill,
+                    "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Payment Mode": pay_mode, "Remarks": remarks
+                })
                 
                 if rec_amt > 0:
-                    c.execute("INSERT INTO Income (Date, Customer_Person, Work_Details, Amount, Payment_Mode, Notes) VALUES (?, ?, ?, ?, ?, ?)",
-                              (bill_date, cust_name.strip(), f"Bill #{bill_no}: {item_desc}", rec_amt, pay_mode, f"Mob: {cust_phone}"))
+                    GSheetsManager.append_row("Income", {
+                        "Date": bill_date, "Customer Person": cust_name.strip(),
+                        "Work Details": f"Bill #{bill_no}: {item_desc}", "Amount": rec_amt,
+                        "Payment Mode": pay_mode, "Notes": f"Mob: {cust_phone}"
+                    })
                 
                 if baki_amt > 0:
-                    c.execute("INSERT INTO Udhar_Baki (Date, Customer_Name, Mobile_Number, Service_Details, Total_Amount, Paid_Amount, Pending_Amount, Due_Date, Status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')",
-                              (bill_date, cust_name.strip(), str(cust_phone).strip(), item_desc, total_bill, rec_amt, baki_amt, due_date))
-                
-                conn.commit()
-                conn.close()
+                    GSheetsManager.append_row("Udhar_Baki", {
+                        "Date": bill_date, "Customer Name": cust_name.strip(),
+                        "Mobile Number": str(cust_phone).strip(), "Service Details": item_desc,
+                        "Total Amount": total_bill, "Paid Amount": rec_amt,
+                        "Pending Amount": baki_amt, "Due Date": due_date, "Status": "Pending"
+                    })
                 
                 pdf_data = generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks)
                 col_dwn, col_wa = st.columns(2)
@@ -824,16 +741,15 @@ elif menu == "🧾 Generate Bill / Voucher":
                 
                 wa_url = f"https://wa.me/91{str(cust_phone).strip()}?text={urllib.parse.quote(wa_msg)}"
                 col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
-                st.success("✅ Bill Created & Saved to SQL Database!")
+                st.success("✅ Bill Created & Saved to Google Sheets!")
             else:
                 st.error("Please enter customer name, valid service, and bill amount.")
 
-    # --- 2. EDIT / DELETE GENERATED INVOICES ---
     elif bill_type == "✏️ Edit / Delete Invoices (Requires PIN)":
-        st.markdown("### 🔐 Modify or Delete Existing Invoice Record (SQL)")
-        df_arch = SQLManager.get_df("Invoices_Archive")
+        st.markdown("### 🔐 Modify or Delete Existing Invoice Record (Cloud)")
+        df_arch = GSheetsManager.get_df("Invoices_Archive")
         
-        if not df_arch.empty and "Invoice No" in df_arch:
+        if not df_arch.empty and "Invoice No" in df_arch.columns:
             sel_inv_options = [f"{r['Invoice No']} - {r['Customer Name']} ({r['Date']}) | Total: ₹{r['Total Amount']}" for _, r in df_arch.iterrows()]
             chosen_inv_str = st.selectbox("Select Invoice to Modify / Delete:", sel_inv_options, key="edit_inv_select")
             
@@ -871,41 +787,39 @@ elif menu == "🧾 Generate Bill / Voucher":
                     
                     btn_up_col, btn_del_col = st.columns(2)
                     if btn_up_col.button("🔄 Update Invoice Record", key=f"up_btn_{sel_inv_no}", use_container_width=True):
-                        if inv_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            c = conn.cursor()
-                            c.execute("""
-                                UPDATE Invoices_Archive SET 
-                                Date = ?, Customer_Name = ?, Mobile_Number = ?, Service_1 = ?, Amount_1 = ?, 
-                                Service_2 = ?, Amount_2 = ?, Total_Amount = ?, Paid_Amount = ?, Pending_Amount = ?, 
-                                Payment_Mode = ?, Remarks = ?
-                                WHERE Invoice_No = ?
-                            """, (up_date, up_cname, str(up_cphone).strip(), up_s1, up_amt1, up_s2, up_amt2, up_tot, up_rec, up_baki, up_mode, up_remarks, sel_inv_no))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"✅ Invoice #{sel_inv_no} updated successfully in SQL!")
+                        if inv_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.update_invoice(sel_inv_no, {
+                                "Date": up_date,
+                                "Customer Name": up_cname,
+                                "Mobile Number": str(up_cphone).strip(),
+                                "Service 1": up_s1,
+                                "Amount 1": up_amt1,
+                                "Service 2": up_s2,
+                                "Amount 2": up_amt2,
+                                "Total Amount": up_tot,
+                                "Paid Amount": up_rec,
+                                "Pending Amount": up_baki,
+                                "Payment Mode": up_mode,
+                                "Remarks": up_remarks
+                            })
+                            st.success(f"✅ Invoice #{sel_inv_no} updated in Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
                             
                     if btn_del_col.button("🗑️ Delete Invoice Record", key=f"del_btn_{sel_inv_no}", type="primary", use_container_width=True):
-                        if inv_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            c = conn.cursor()
-                            c.execute("DELETE FROM Invoices_Archive WHERE Invoice_No = ?", (sel_inv_no,))
-                            conn.commit()
-                            conn.close()
-                            st.warning(f"🗑️ Invoice #{sel_inv_no} deleted from SQL Database!")
+                        if inv_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.delete_invoice(sel_inv_no)
+                            st.warning(f"🗑️ Invoice #{sel_inv_no} deleted from Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
         else:
-            st.info("No generated invoice records found to edit.")
+            st.info("No generated invoice records found.")
 
-    # --- 3. RE-PRINT OLD INVOICES ---
     elif bill_type == "🖨️ Re-Print Old Invoice":
-        df_arch = SQLManager.get_df("Invoices_Archive")
-        if not df_arch.empty:
+        df_arch = GSheetsManager.get_df("Invoices_Archive")
+        if not df_arch.empty and "Invoice No" in df_arch.columns:
             sel_inv = st.selectbox("Select Invoice:", [f"{r['Invoice No']} - {r['Customer Name']} ({r['Date']})" for _, r in df_arch.iterrows()])
             sel_no = sel_inv.split(" - ")[0]
             r = df_arch[df_arch["Invoice No"] == sel_no].iloc[0]
@@ -914,7 +828,6 @@ elif menu == "🧾 Generate Bill / Voucher":
         else:
             st.info("No invoices found.")
 
-    # --- 4. EXPENSE VOUCHER ---
     elif bill_type == "Payment Voucher (Expense)":
         c1, c2 = st.columns(2)
         v_no = c1.text_input("Voucher No.", f"VOU-{datetime.now().strftime('%Y%m%d%H%M')}")
@@ -923,27 +836,25 @@ elif menu == "🧾 Generate Bill / Voucher":
         p_amt = c2.number_input("Amount (₹) *", min_value=0.0, step=50.0)
         p_mode = c1.selectbox("Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
         p_desc = c2.text_input("Expense Purpose *")
-        if st.button("💾 Save Expense to SQL", type="primary", use_container_width=True):
+        if st.button("💾 Save Expense to Cloud", type="primary", use_container_width=True):
             if p_name and p_amt > 0:
-                conn = SQLManager.get_connection()
-                conn.cursor().execute("INSERT INTO Expense (Date, Expense_Name, Amount, Notes) VALUES (?, ?, ?, ?)",
-                                      (v_date, f"{p_name} ({p_desc})", p_amt, f"VOU #{v_no} | {p_mode}"))
-                conn.commit()
-                conn.close()
-                st.success("Expense Recorded in SQL Database!")
+                GSheetsManager.append_row("Expense", {
+                    "Date": v_date, "Expense Name": f"{p_name} ({p_desc})",
+                    "Amount": p_amt, "Notes": f"VOU #{v_no} | {p_mode}"
+                })
+                st.success("Expense Recorded in Google Sheets!")
 
-    # --- 5. EDIT / DELETE EXPENSE VOUCHERS ---
     elif bill_type == "✏️ Edit / Delete Vouchers (Requires PIN)":
         st.markdown("### 🔐 Modify or Delete Payment Voucher Record")
-        df_exp = SQLManager.get_df("Expense")
+        df_exp = GSheetsManager.get_df("Expense")
         
-        if not df_exp.empty:
+        if not df_exp.empty and "ID" in df_exp.columns:
             sel_exp_options = [f"ID #{r['ID']} - {r.get('Expense Name', '')} ({r.get('Date', '')}) | ₹{r.get('Amount', 0)}" for _, r in df_exp.iterrows()]
             chosen_exp_str = st.selectbox("Select Voucher / Expense to Modify:", sel_exp_options, key="edit_exp_select")
             
             if chosen_exp_str:
                 sel_exp_id = int(chosen_exp_str.split(" ")[1].replace("#", ""))
-                exp_row = df_exp[df_exp["ID"] == sel_exp_id].iloc[0]
+                exp_row = df_exp[df_exp["ID"].astype(str) == str(sel_exp_id)].iloc[0]
                 
                 with st.expander(f"📝 Edit Expense Voucher #{sel_exp_id}", expanded=True):
                     up_ed1, up_ed2 = st.columns(2)
@@ -959,49 +870,39 @@ elif menu == "🧾 Generate Bill / Voucher":
                     
                     eb_up_col, eb_del_col = st.columns(2)
                     if eb_up_col.button("🔄 Update Voucher", key=f"up_exp_btn_{sel_exp_id}", use_container_width=True):
-                        if exp_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("UPDATE Expense SET Date = ?, Expense_Name = ?, Amount = ?, Notes = ? WHERE ID = ?",
-                                                  (up_e_date, up_e_name, up_e_amt, up_e_notes, sel_exp_id))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"✅ Voucher #{sel_exp_id} updated in SQL!")
+                        if exp_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.update_row("Expense", sel_exp_id, {
+                                "Date": up_e_date, "Expense Name": up_e_name,
+                                "Amount": up_e_amt, "Notes": up_e_notes
+                            })
+                            st.success(f"✅ Voucher #{sel_exp_id} updated in Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
                             
                     if eb_del_col.button("🗑️ Delete Voucher", key=f"del_exp_btn_{sel_exp_id}", type="primary", use_container_width=True):
-                        if exp_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("DELETE FROM Expense WHERE ID = ?", (sel_exp_id,))
-                            conn.commit()
-                            conn.close()
-                            st.warning(f"🗑️ Voucher #{sel_exp_id} deleted from SQL!")
+                        if exp_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.delete_row("Expense", sel_exp_id)
+                            st.warning(f"🗑️ Voucher #{sel_exp_id} deleted!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
         else:
             st.info("No expense vouchers found to edit.")
 
-    # --- 6. SETTLE OLD PENDING DUE ---
     elif bill_type == "Settle Old Pending Due":
-        df_baki = SQLManager.get_df("Udhar_Baki")
-        if not df_baki.empty:
-            pending = df_baki[df_baki["Pending Amount"] > 0]
+        df_baki = GSheetsManager.get_df("Udhar_Baki")
+        if not df_baki.empty and "Pending Amount" in df_baki.columns:
+            pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
             if not pending.empty:
                 sel_acc = st.selectbox("Select Due Account:", [f"ID #{r['ID']} - {r['Customer Name']} | Pending: ₹{r['Pending Amount']}" for _, r in pending.iterrows()])
                 sel_id = int(sel_acc.split(" ")[1].replace("#", ""))
                 
-                conn = SQLManager.get_connection()
-                c = conn.cursor()
-                c.execute("SELECT * FROM Udhar_Baki WHERE ID = ?", (sel_id,))
-                r = c.fetchone()
-                conn.close()
-                
-                c_name = str(r['Customer_Name']) if 'Customer_Name' in r.keys() else str(r['Customer Name'])
-                c_serv = str(r['Service_Details']) if 'Service_Details' in r.keys() else str(r['Service Details'])
-                curr_pend = float(r['Pending_Amount']) if 'Pending_Amount' in r.keys() else float(r['Pending Amount'])
-                curr_paid = float(r['Paid_Amount']) if 'Paid_Amount' in r.keys() else float(r['Paid Amount'])
+                r = df_baki[df_baki["ID"].astype(str) == str(sel_id)].iloc[0]
+                c_name = str(r.get('Customer Name', ''))
+                c_serv = str(r.get('Service Details', 'Service'))
+                curr_pend = float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce'))
+                curr_paid = float(pd.to_numeric(r.get('Paid Amount', 0), errors='coerce'))
                 
                 s_amt = st.number_input("Payment Received Now (₹) *", min_value=0.0, max_value=curr_pend, value=curr_pend, step=100.0)
                 s_mode = st.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
@@ -1010,25 +911,30 @@ elif menu == "🧾 Generate Bill / Voucher":
                     new_pending = curr_pend - s_amt
                     new_stat = "Cleared" if new_pending <= 0 else "Pending"
                     
-                    conn = SQLManager.get_connection()
-                    c = conn.cursor()
-                    c.execute("UPDATE Udhar_Baki SET Paid_Amount = ?, Pending_Amount = ?, Status = ? WHERE ID = ?",
-                              (new_paid, new_pending, new_stat, sel_id))
-                    c.execute("INSERT INTO Income (Date, Customer_Person, Work_Details, Amount, Payment_Mode, Notes) VALUES (?, ?, ?, ?, ?, ?)",
-                              (datetime.now().strftime("%Y-%m-%d"), c_name, f"Due Settlement ({c_serv})", s_amt, s_mode, f"Due Rec #{sel_id}"))
-                    conn.commit()
-                    conn.close()
-                    st.success("Due Settled in SQL!")
+                    GSheetsManager.update_row("Udhar_Baki", sel_id, {
+                        "Paid Amount": new_paid,
+                        "Pending Amount": new_pending,
+                        "Status": new_stat
+                    })
+                    GSheetsManager.append_row("Income", {
+                        "Date": datetime.now().strftime("%Y-%m-%d"),
+                        "Customer Person": c_name,
+                        "Work Details": f"Due Settlement ({c_serv})",
+                        "Amount": s_amt,
+                        "Payment Mode": s_mode,
+                        "Notes": f"Due Rec #{sel_id}"
+                    })
+                    st.success("Due Settled in Google Sheets!")
                     st.rerun()
 
-# ----------------- 4. DUE COLLECTIONS (VIEW, EDIT & DELETE WITH PIN) -----------------
+# ----------------- 4. DUE COLLECTIONS -----------------
 elif menu == "📋 Due Collections":
-    st.subheader("📋 Due Collections & Credit Ledger Management (SQL)")
+    st.subheader("📋 Due Collections & Credit Ledger Management (Cloud)")
     
     tab_due_view, tab_due_edit = st.tabs(["📋 Active Due Receivables", "🔐 Edit / Modify Due Record (Requires PIN)"])
     
     with tab_due_view:
-        df_b = SQLManager.get_df("Udhar_Baki")
+        df_b = GSheetsManager.get_df("Udhar_Baki")
         if not df_b.empty:
             st.dataframe(df_b, use_container_width=True)
         else:
@@ -1036,14 +942,14 @@ elif menu == "📋 Due Collections":
             
     with tab_due_edit:
         st.markdown("##### 🔐 Modify or Delete Customer Due Record")
-        df_b = SQLManager.get_df("Udhar_Baki")
-        if not df_b.empty:
+        df_b = GSheetsManager.get_df("Udhar_Baki")
+        if not df_b.empty and "ID" in df_b.columns:
             sel_due_opts = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) | Pending: ₹{r.get('Pending Amount', 0)}" for _, r in df_b.iterrows()]
             chosen_due_str = st.selectbox("Select Due Record to Edit / Delete:", sel_due_opts, key="due_mod_select")
             
             if chosen_due_str:
                 sel_due_id = int(chosen_due_str.split(" ")[1].replace("#", ""))
-                due_r = df_b[df_b["ID"] == sel_due_id].iloc[0]
+                due_r = df_b[df_b["ID"].astype(str) == str(sel_due_id)].iloc[0]
                 
                 with st.expander(f"📝 Edit Due Record #{sel_due_id} - {due_r.get('Customer Name', '')}", expanded=True):
                     dc1, dc2 = st.columns(2)
@@ -1070,52 +976,46 @@ elif menu == "📋 Due Collections":
                     
                     db_up_c, db_del_c = st.columns(2)
                     if db_up_c.button("🔄 Update Due Record", key=f"btn_up_due_{sel_due_id}", use_container_width=True):
-                        if due_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("""
-                                UPDATE Udhar_Baki SET 
-                                Date = ?, Customer_Name = ?, Mobile_Number = ?, Service_Details = ?, 
-                                Total_Amount = ?, Paid_Amount = ?, Pending_Amount = ?, Due_Date = ?, Status = ?
-                                WHERE ID = ?
-                            """, (up_d_date, up_d_name, str(up_d_phone).strip(), up_d_serv, up_d_tot, up_d_paid, up_d_pending, up_d_due_dt, up_d_stat, sel_due_id))
-                            conn.commit()
-                            conn.close()
-                            st.success(f"✅ Due Record #{sel_due_id} updated successfully in SQL!")
+                        if due_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.update_row("Udhar_Baki", sel_due_id, {
+                                "Date": up_d_date, "Customer Name": up_d_name,
+                                "Mobile Number": str(up_d_phone).strip(), "Service Details": up_d_serv,
+                                "Total Amount": up_d_tot, "Paid Amount": up_d_paid,
+                                "Pending Amount": up_d_pending, "Due Date": up_d_due_dt, "Status": up_d_stat
+                            })
+                            st.success(f"✅ Due Record #{sel_due_id} updated in Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
                             
                     if db_del_c.button("🗑️ Delete Due Record", key=f"btn_del_due_{sel_due_id}", type="primary", use_container_width=True):
-                        if due_auth_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("DELETE FROM Udhar_Baki WHERE ID = ?", (sel_due_id,))
-                            conn.commit()
-                            conn.close()
-                            st.warning(f"🗑️ Due Record #{sel_due_id} deleted from SQL Database!")
+                        if due_auth_pin == GSheetsManager.get_pin():
+                            GSheetsManager.delete_row("Udhar_Baki", sel_due_id)
+                            st.warning(f"🗑️ Due Record #{sel_due_id} deleted from Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
         else:
             st.info("No due records found to edit.")
 
-# ----------------- 5. REPORTS & PDF (LANDSCAPE A4 LAYOUT) -----------------
+# ----------------- 5. REPORTS & PDF -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
     d_from = c1.date_input("From Date", datetime.now().replace(day=1)).strftime("%Y-%m-%d")
     d_to = c2.date_input("To Date", datetime.now()).strftime("%Y-%m-%d")
     
-    df_i = SQLManager.get_df("Income")
-    df_e = SQLManager.get_df("Expense")
-    df_b = SQLManager.get_df("Udhar_Baki")
+    df_i = GSheetsManager.get_df("Income")
+    df_e = GSheetsManager.get_df("Expense")
+    df_b = GSheetsManager.get_df("Udhar_Baki")
     
-    f_i = df_i[(df_i["Date"] >= d_from) & (df_i["Date"] <= d_to)] if not df_i.empty and "Date" in df_i else pd.DataFrame()
-    f_e = df_e[(df_e["Date"] >= d_from) & (df_e["Date"] <= d_to)] if not df_e.empty and "Date" in df_e else pd.DataFrame()
-    f_b = df_b[(df_b["Date"] >= d_from) & (df_b["Date"] <= d_to)] if not df_b.empty and "Date" in df_b else (df_b if not df_b.empty else pd.DataFrame())
+    f_i = df_i[(df_i["Date"] >= d_from) & (df_i["Date"] <= d_to)] if not df_i.empty and "Date" in df_i.columns else pd.DataFrame()
+    f_e = df_e[(df_e["Date"] >= d_from) & (df_e["Date"] <= d_to)] if not df_e.empty and "Date" in df_e.columns else pd.DataFrame()
+    f_b = df_b[(df_b["Date"] >= d_from) & (df_b["Date"] <= d_to)] if not df_b.empty and "Date" in df_b.columns else (df_b if not df_b.empty else pd.DataFrame())
     
-    t_i = f_i["Amount"].sum() if not f_i.empty and "Amount" in f_i else 0.0
-    t_e = f_e["Amount"].sum() if not f_e.empty and "Amount" in f_e else 0.0
-    cash_op, bank_op = SQLManager.get_opening_balance()
+    t_i = pd.to_numeric(f_i["Amount"], errors='coerce').sum() if not f_i.empty and "Amount" in f_i.columns else 0.0
+    t_e = pd.to_numeric(f_e["Amount"], errors='coerce').sum() if not f_e.empty and "Amount" in f_e.columns else 0.0
+    cash_op, bank_op = GSheetsManager.get_opening_balance()
     tot_op = cash_op + bank_op
     closing_bal = tot_op + t_i - t_e
     
@@ -1189,7 +1089,7 @@ elif menu == "📄 Reports & PDF":
                     Paragraph(str(r.get("Customer Person", "-")), tbl_text),
                     Paragraph(str(r.get("Work Details", "-")), tbl_text),
                     Paragraph(str(r.get("Payment Mode", "-")), tbl_text),
-                    Paragraph(f"<b>{float(r.get('Amount', 0)):,.2f}</b>", tbl_text)
+                    Paragraph(f"<b>{float(pd.to_numeric(r.get('Amount', 0), errors='coerce')):,.2f}</b>", tbl_text)
                 ])
             t1 = Table(i_rows, colWidths=[80, 220, 310, 80, 100])
             t1.setStyle(TableStyle([
@@ -1216,7 +1116,7 @@ elif menu == "📄 Reports & PDF":
                     Paragraph(str(r.get("Date", "-")), tbl_text),
                     Paragraph(str(r.get("Expense Name", "-")), tbl_text),
                     Paragraph(str(r.get("Notes", "-")), tbl_text),
-                    Paragraph(f"<b>{float(r.get('Amount', 0)):,.2f}</b>", tbl_text)
+                    Paragraph(f"<b>{float(pd.to_numeric(r.get('Amount', 0), errors='coerce')):,.2f}</b>", tbl_text)
                 ])
             t2 = Table(e_rows, colWidths=[80, 380, 230, 100])
             t2.setStyle(TableStyle([
@@ -1231,7 +1131,7 @@ elif menu == "📄 Reports & PDF":
             elems.append(Spacer(1, 10))
 
         if not df_due.empty:
-            active_dues = df_due[df_due["Pending Amount"] > 0] if "Pending Amount" in df_due else pd.DataFrame()
+            active_dues = df_due[pd.to_numeric(df_due["Pending Amount"], errors='coerce') > 0] if "Pending Amount" in df_due.columns else pd.DataFrame()
             if not active_dues.empty:
                 elems.append(Paragraph("<b>📋 OUTSTANDING PENDING DUES (RECEIVABLES):</b>", styles['Heading3']))
                 d_rows = [[
@@ -1250,9 +1150,9 @@ elif menu == "📄 Reports & PDF":
                         Paragraph(str(r.get("Customer Name", "-")), tbl_text),
                         Paragraph(str(r.get("Mobile Number", "-")), tbl_text),
                         Paragraph(str(r.get("Service Details", "Service")), tbl_text),
-                        Paragraph(f"{float(r.get('Total Amount', 0)):,.2f}", tbl_text),
-                        Paragraph(f"{float(r.get('Paid Amount', 0)):,.2f}", tbl_text),
-                        Paragraph(f"<b>{float(r.get('Pending Amount', 0)):,.2f}</b>", tbl_text),
+                        Paragraph(f"{float(pd.to_numeric(r.get('Total Amount', 0), errors='coerce')):,.2f}", tbl_text),
+                        Paragraph(f"{float(pd.to_numeric(r.get('Paid Amount', 0), errors='coerce')):,.2f}", tbl_text),
+                        Paragraph(f"<b>{float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce')):,.2f}</b>", tbl_text),
                         Paragraph(str(r.get("Due Date", "-")), tbl_text)
                     ])
                 t3 = Table(d_rows, colWidths=[70, 160, 95, 175, 75, 75, 75, 65])
@@ -1291,23 +1191,23 @@ elif menu == "📄 Reports & PDF":
 
 # ----------------- 6. OPENING BALANCE -----------------
 elif menu == "🏦 Opening Balance":
-    st.subheader("🏦 Opening Balance Setup (SQL)")
-    curr_c, curr_b = SQLManager.get_opening_balance()
+    st.subheader("🏦 Opening Balance Setup (Google Sheets)")
+    curr_c, curr_b = GSheetsManager.get_opening_balance()
     c1, c2 = st.columns(2)
     in_c = c1.number_input("Cash in Hand (₹)", value=float(curr_c), step=500.0)
     in_b = c2.number_input("Bank Balance (₹)", value=float(curr_b), step=500.0)
     pin = st.text_input("Enter Security PIN to Save:", type="password")
     if st.button("💾 Save Opening Balance", type="primary", use_container_width=True):
-        if pin == SQLManager.get_pin():
-            SQLManager.set_opening_balance(in_c, in_b)
-            st.success("Opening Balance Saved to SQL!")
+        if pin == GSheetsManager.get_pin():
+            GSheetsManager.set_opening_balance(in_c, in_b)
+            st.success("Opening Balance Saved to Google Sheets!")
             st.rerun()
         else:
             st.error("Invalid PIN!")
 
 # ----------------- 7. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
-    st.subheader("👥 Client Directory & Broadcast (SQL)")
+    st.subheader("👥 Client Directory & Broadcast (Cloud)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
     
     with tab_new:
@@ -1324,25 +1224,26 @@ elif menu == "👥 Customers Directory":
             
             if st.form_submit_button("💾 Save Client Profile", use_container_width=True):
                 if cn and cp:
-                    df_c = SQLManager.get_df("Customers")
+                    df_c = GSheetsManager.get_df("Customers")
                     clean_phone = str(cp).strip()
-                    if not df_c.empty and "Mobile Number" in df_c and clean_phone in df_c["Mobile Number"].astype(str).values:
+                    if not df_c.empty and "Mobile Number" in df_c.columns and clean_phone in df_c["Mobile Number"].astype(str).values:
                         st.warning(f"⚠️ A customer with mobile {clean_phone} already exists in records!")
                     else:
-                        conn = SQLManager.get_connection()
-                        conn.cursor().execute("""
-                            INSERT INTO Customers (Created_Date, Customer_Name, Mobile_Number, City_Address, Primary_Service, Notes)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (datetime.now().strftime("%Y-%m-%d"), cn.strip(), clean_phone, c_addr, cs, c_notes))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Client '{cn}' saved to SQL successfully!")
+                        GSheetsManager.append_row("Customers", {
+                            "Created Date": datetime.now().strftime("%Y-%m-%d"),
+                            "Customer Name": cn.strip(),
+                            "Mobile Number": clean_phone,
+                            "City Address": c_addr,
+                            "Primary Service": cs,
+                            "Notes": c_notes
+                        })
+                        st.success(f"Client '{cn}' saved to Google Sheets successfully!")
                         st.rerun()
                 else:
                     st.error("Customer name and mobile number are required.")
                     
     with tab_list:
-        df_c = SQLManager.get_df("Customers")
+        df_c = GSheetsManager.get_df("Customers")
         if not df_c.empty:
             search_query = st.text_input("🔍 Quick Search by Name, Mobile, Address or Service:", "")
             if search_query:
@@ -1362,7 +1263,7 @@ elif menu == "👥 Customers Directory":
             
             if sel_c_str:
                 sel_c_id = int(sel_c_str.split(" ")[1].replace("#", ""))
-                c_row = df_c[df_c["ID"] == sel_c_id].iloc[0]
+                c_row = df_c[df_c["ID"].astype(str) == str(sel_c_id)].iloc[0]
                 
                 with st.expander(f"📝 Edit Client Profile #{sel_c_id} - {c_row.get('Customer Name', '')}", expanded=True):
                     ec1, ec2 = st.columns(2)
@@ -1383,27 +1284,20 @@ elif menu == "👥 Customers Directory":
                     
                     b_col1, b_col2 = st.columns(2)
                     if b_col1.button("🔄 Update Customer Details", key=f"btn_up_{sel_c_id}", use_container_width=True):
-                        if edit_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("""
-                                UPDATE Customers SET 
-                                Customer_Name = ?, Mobile_Number = ?, City_Address = ?, Primary_Service = ?, Notes = ?
-                                WHERE ID = ?
-                            """, (u_cname, str(u_cphone).strip(), u_caddr, u_cserv, u_cnotes, sel_c_id))
-                            conn.commit()
-                            conn.close()
-                            st.success("Client profile updated successfully in SQL!")
+                        if edit_pin == GSheetsManager.get_pin():
+                            GSheetsManager.update_row("Customers", sel_c_id, {
+                                "Customer Name": u_cname, "Mobile Number": str(u_cphone).strip(),
+                                "City Address": u_caddr, "Primary Service": u_cserv, "Notes": u_cnotes
+                            })
+                            st.success("Client profile updated successfully in Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
                             
                     if b_col2.button("🗑️ Delete Customer", key=f"btn_del_{sel_c_id}", type="primary", use_container_width=True):
-                        if edit_pin == SQLManager.get_pin():
-                            conn = SQLManager.get_connection()
-                            conn.cursor().execute("DELETE FROM Customers WHERE ID = ?", (sel_c_id,))
-                            conn.commit()
-                            conn.close()
-                            st.warning("Client deleted from SQL Database!")
+                        if edit_pin == GSheetsManager.get_pin():
+                            GSheetsManager.delete_row("Customers", sel_c_id)
+                            st.warning("Client deleted from Google Sheets!")
                             st.rerun()
                         else:
                             st.error("❌ Incorrect Security PIN!")
@@ -1412,7 +1306,7 @@ elif menu == "👥 Customers Directory":
 
     with tab_promo:
         st.markdown("##### 📢 Bulk Broadcast & Promotion List")
-        df_c = SQLManager.get_df("Customers")
+        df_c = GSheetsManager.get_df("Customers")
         if not df_c.empty:
             serv_col_name = "Primary Service" if "Primary Service" in df_c.columns else df_c.columns[min(5, len(df_c.columns)-1)]
             service_unique_list = list(df_c[serv_col_name].dropna().unique()) if serv_col_name in df_c.columns else []
@@ -1437,92 +1331,37 @@ elif menu == "👥 Customers Directory":
 
 # ----------------- 8. INCOME & EXPENSE MANAGEMENT -----------------
 elif menu == "💰 Income":
-    st.subheader("💰 Income Ledger (SQL)")
-    df_i = SQLManager.get_df("Income")
+    st.subheader("💰 Income Ledger (Google Sheets)")
+    df_i = GSheetsManager.get_df("Income")
     if not df_i.empty:
         st.dataframe(df_i, use_container_width=True)
 
 elif menu == "💸 Expenses":
-    st.subheader("💸 Expense Ledger (SQL)")
-    df_e = SQLManager.get_df("Expense")
+    st.subheader("💸 Expense Ledger (Google Sheets)")
+    df_e = GSheetsManager.get_df("Expense")
     if not df_e.empty:
         st.dataframe(df_e, use_container_width=True)
 
-# ----------------- 9. SQL BACKUP & RESTORE -----------------
-elif menu == "💾 Backup & Restore (Excel / SQL)":
-    st.subheader("💾 Backup & Restore Center (Excel & SQL)")
-    st.info("💡 You can export backups to Excel (.xlsx) and restore data from any previous Excel backup file.")
+# ----------------- 9. CLOUD BACKUP -----------------
+elif menu == "💾 Cloud Excel Backup":
+    st.subheader("💾 Complete Data Export (Excel Workbook)")
+    st.info("💡 Generate an offline Excel backup file (.xlsx) containing all Google Sheets data.")
     
-    b_tab1, b_tab2, b_tab3 = st.tabs([
-        "📥 Download Backups", 
-        "📤 Restore from Excel File (.xlsx)",
-        "💾 Restore SQL Database File (.db)"
-    ])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        for tbl in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
+            df = GSheetsManager.get_df(tbl)
+            df.to_excel(writer, sheet_name=tbl, index=False)
+    buf.seek(0)
     
-    # 1. Download Backup
-    with b_tab1:
-        st.markdown("##### 📥 Export All Accounting Records")
-        c_bk1, c_bk2 = st.columns(2)
-        
-        excel_backup_data = SQLManager.export_sqlite_to_excel_buffer()
-        c_bk1.download_button(
-            label="📊 Download Full Excel Workbook (.xlsx)",
-            data=excel_backup_data,
-            file_name=f"Rojmed_Excel_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True
-        )
-        
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE, "rb") as f:
-                c_bk2.download_button(
-                    label="💾 Download SQLite Database File (.db)",
-                    data=f,
-                    file_name=f"rojmed_sql_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
-                    mime="application/x-sqlite3",
-                    use_container_width=True
-                )
-
-    # 2. Restore from Excel (.xlsx)
-    with b_tab2:
-        st.markdown("##### 📤 Upload & Restore from Excel File (.xlsx)")
-        st.caption("Upload your previously downloaded Excel backup file. All sheets will be imported back into SQL Database.")
-        
-        uploaded_excel = st.file_uploader("Choose Backup Excel File (.xlsx):", type=["xlsx"], key="restore_excel_uploader")
-        excel_pin = st.text_input("Enter Master Security PIN to Confirm Restore:", type="password", key="rest_pin_excel")
-        
-        if st.button("🚀 Restore Data from Excel File", type="primary", use_container_width=True):
-            if excel_pin == SQLManager.get_pin():
-                if uploaded_excel is not None:
-                    success, msg = SQLManager.import_excel_to_sqlite(uploaded_excel)
-                    if success:
-                        st.success("✅ Excel data successfully imported and restored into SQL Database!")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ Error restoring Excel data: {msg}")
-                else:
-                    st.error("Please choose a valid `.xlsx` Excel backup file.")
-            else:
-                st.error("❌ Incorrect Security PIN! Action denied.")
-
-    # 3. Restore from SQLite (.db)
-    with b_tab3:
-        st.markdown("##### 💾 Restore SQLite Database File (.db)")
-        uploaded_db = st.file_uploader("Choose SQLite Database File (.db):", type=["db", "sqlite", "sqlite3"], key="restore_db_uploader")
-        db_pin = st.text_input("Enter Master Security PIN:", type="password", key="rest_pin_db")
-        
-        if st.button("🚀 Restore SQL Database", type="primary", use_container_width=True):
-            if db_pin == SQLManager.get_pin():
-                if uploaded_db is not None:
-                    with open(DB_FILE, "wb") as f:
-                        f.write(uploaded_db.getbuffer())
-                    st.success("✅ SQL Database file restored!")
-                    st.rerun()
-                else:
-                    st.error("Please choose a valid `.db` file.")
-            else:
-                st.error("❌ Incorrect Security PIN!")
+    st.download_button(
+        label="📥 Download Full Offline Excel Backup (.xlsx)",
+        data=buf,
+        file_name=f"Rojmed_Cloud_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True
+    )
 
 # ----------------- 10. SECURITY PIN -----------------
 elif menu == "⚙️ Security / Change PIN":
@@ -1532,10 +1371,10 @@ elif menu == "⚙️ Security / Change PIN":
         new_p = st.text_input("New PIN *", type="password")
         conf_p = st.text_input("Confirm New PIN *", type="password")
         if st.form_submit_button("💾 Update PIN"):
-            if old_p == SQLManager.get_pin():
+            if old_p == GSheetsManager.get_pin():
                 if new_p and new_p == conf_p:
-                    SQLManager.set_pin(new_p)
-                    st.success("PIN Updated in SQL Settings!")
+                    GSheetsManager.set_pin(new_p)
+                    st.success("PIN Updated in Google Sheets Settings!")
                 else:
                     st.error("PIN mismatch!")
             else:
