@@ -139,7 +139,7 @@ class GSheetsManager:
     def append_row(sheet_name, row_dict):
         df = GSheetsManager.get_df(sheet_name)
         if "ID" in DEFAULT_SCHEMAS.get(sheet_name, []):
-            new_id = 1 if df.empty or "ID" not in df else (int(df["ID"].dropna().max()) + 1 if len(df["ID"].dropna()) > 0 else 1)
+            new_id = 1 if df.empty or "ID" not in df.columns else (int(pd.to_numeric(df["ID"], errors='coerce').max()) + 1 if len(df["ID"].dropna()) > 0 else 1)
             row_dict["ID"] = new_id
         clean_row = {k.replace('_', ' ').strip(): v for k, v in row_dict.items()}
         new_row_df = pd.DataFrame([clean_row])
@@ -207,25 +207,43 @@ class GSheetsManager:
 
     @staticmethod
     def get_pin():
-        df_s = GSheetsManager.get_df("Settings")
-        if not df_s.empty and "Setting Key" in df_s.columns and "Setting Value" in df_s.columns:
-            row = df_s[df_s["Setting Key"] == "Master_PIN"]
-            if not row.empty:
-                return str(row.iloc[0]["Setting Value"]).strip()
+        try:
+            df_s = GSheetsManager.get_df("Settings")
+            if not df_s.empty:
+                key_col = None
+                val_col = None
+                for col in df_s.columns:
+                    c_clean = str(col).lower().replace(" ", "").replace("_", "")
+                    if "key" in c_clean:
+                        key_col = col
+                    if "value" in c_clean:
+                        val_col = col
+                if key_col and val_col:
+                    row = df_s[df_s[key_col].astype(str).str.strip() == "Master_PIN"]
+                    if not row.empty:
+                        raw_val = row.iloc[0][val_col]
+                        if pd.notna(raw_val):
+                            val_str = str(raw_val).strip()
+                            if val_str.endswith(".0"):
+                                val_str = val_str[:-2]
+                            return str(val_str)
+        except Exception:
+            pass
         return DEFAULT_PIN
 
     @staticmethod
     def set_pin(new_pin):
         df_s = GSheetsManager.get_df("Settings")
         now_str = datetime.now().strftime("%Y-%m-%d")
+        clean_p = str(new_pin).strip()
         if df_s.empty or "Setting Key" not in df_s.columns:
-            df_s = pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": str(new_pin).strip(), "Updated Date": now_str}])
+            df_s = pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": clean_p, "Updated Date": now_str}])
         else:
             if "Master_PIN" in df_s["Setting Key"].values:
-                df_s.loc[df_s["Setting Key"] == "Master_PIN", "Setting Value"] = str(new_pin).strip()
+                df_s.loc[df_s["Setting Key"] == "Master_PIN", "Setting Value"] = clean_p
                 df_s.loc[df_s["Setting Key"] == "Master_PIN", "Updated Date"] = now_str
             else:
-                df_s = pd.concat([df_s, pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": str(new_pin).strip(), "Updated Date": now_str}])], ignore_index=True)
+                df_s = pd.concat([df_s, pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": clean_p, "Updated Date": now_str}])], ignore_index=True)
         GSheetsManager.save_df("Settings", df_s)
 
     @staticmethod
@@ -236,9 +254,15 @@ class GSheetsManager:
             rc = df_s[df_s["Setting Key"] == "Cash_Opening_Balance"]
             rb = df_s[df_s["Setting Key"] == "Bank_Opening_Balance"]
             if not rc.empty and pd.notna(rc.iloc[0]["Setting Value"]):
-                cash_op = float(rc.iloc[0]["Setting Value"])
+                try:
+                    cash_op = float(rc.iloc[0]["Setting Value"])
+                except Exception:
+                    pass
             if not rb.empty and pd.notna(rb.iloc[0]["Setting Value"]):
-                bank_op = float(rb.iloc[0]["Setting Value"])
+                try:
+                    bank_op = float(rb.iloc[0]["Setting Value"])
+                except Exception:
+                    pass
         return cash_op, bank_op
 
     @staticmethod
@@ -285,6 +309,7 @@ def render_top_logos():
                 st.image(LOGO_PROPERTY, use_container_width=True)
         st.markdown("<hr style='margin: 12px 0 20px 0; border: 0; height: 1px; background: #E2E8F0;'>", unsafe_allow_html=True)
 
+# ----------------- 🔒 SECURE LOGIN SCREEN -----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -294,25 +319,28 @@ if not st.session_state.logged_in:
     with col_c2:
         st.markdown("""
             <div style="background: #FFFFFF; padding: 25px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Secure Cloud Ledger Login</h3>
-                <p style="color: #64748B; font-size: 13px;">Connected directly to Google Sheets Cloud Database.</p>
+                <h3 style="color: #1E3A8A; margin-top: 0;">🔒 Secure Ledger Login</h3>
+                <p style="color: #64748B; font-size: 13px;">Enter your Security Master PIN to access the accounting system.</p>
             </div>
         """, unsafe_allow_html=True)
         st.write("")
-        entered_pin = st.text_input("Enter 4-Digit Security PIN:", type="password", max_chars=8)
+        entered_pin = st.text_input("Enter Security PIN:", type="password", max_chars=12)
         
         if st.button("🔓 Unlock & Login", type="primary", use_container_width=True):
-            if entered_pin == GSheetsManager.get_pin():
+            saved_pin = str(GSheetsManager.get_pin()).strip()
+            user_input = str(entered_pin).strip()
+            
+            if user_input != "" and user_input == saved_pin:
                 st.session_state.logged_in = True
                 st.success("Access Granted!")
                 st.rerun()
             else:
-                st.error("❌ Invalid PIN! Please try again.")
-        st.caption(f"Default setup PIN is: `{DEFAULT_PIN}`")
+                st.error("❌ Invalid PIN! Please enter the correct Security PIN.")
     st.stop()
 
 render_top_logos()
 
+# ----------------- NAVIGATION MENU -----------------
 if "current_page" not in st.session_state:
     st.session_state.current_page = "📊 Dashboard"
 
@@ -783,7 +811,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     up_remarks = st.text_input("Remarks", str(inv_row.get("Remarks", "")) if pd.notna(inv_row.get("Remarks")) else "")
                     
                     st.markdown("🔒 **Security Authorization:**")
-                    inv_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"inv_pin_{sel_inv_no}")
+                    inv_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"inv_pin_{sel_inv_no}")
                     
                     btn_up_col, btn_del_col = st.columns(2)
                     if btn_up_col.button("🔄 Update Invoice Record", key=f"up_btn_{sel_inv_no}", use_container_width=True):
@@ -866,7 +894,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     up_e_notes = up_ed4.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
                     
                     st.markdown("🔒 **Security Authorization:**")
-                    exp_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
+                    exp_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
                     
                     eb_up_col, eb_del_col = st.columns(2)
                     if eb_up_col.button("🔄 Update Voucher", key=f"up_exp_btn_{sel_exp_id}", use_container_width=True):
@@ -972,7 +1000,7 @@ elif menu == "📋 Due Collections":
                     up_d_stat = dc8.selectbox("Status", ["Pending", "Cleared"], index=0 if up_d_pending > 0 else 1, key=f"d_st_{sel_due_id}")
                     
                     st.markdown("🔒 **Security Authorization:**")
-                    due_auth_pin = st.text_input("Enter 4-Digit Security PIN to Authorize:", type="password", key=f"due_pin_{sel_due_id}")
+                    due_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"due_pin_{sel_due_id}")
                     
                     db_up_c, db_del_c = st.columns(2)
                     if db_up_c.button("🔄 Update Due Record", key=f"btn_up_due_{sel_due_id}", use_container_width=True):
@@ -1280,7 +1308,7 @@ elif menu == "👥 Customers Directory":
                     u_cnotes = st.text_area("Notes / Remarks", str(c_row.get("Notes", "")) if pd.notna(c_row.get("Notes")) else "")
                     
                     st.markdown("🔒 **Security Confirmation:**")
-                    edit_pin = st.text_input("Enter Master Security PIN:", type="password", key=f"c_pin_{sel_c_id}")
+                    edit_pin = st.text_input("Enter Security PIN:", type="password", key=f"c_pin_{sel_c_id}")
                     
                     b_col1, b_col2 = st.columns(2)
                     if b_col1.button("🔄 Update Customer Details", key=f"btn_up_{sel_c_id}", use_container_width=True):
