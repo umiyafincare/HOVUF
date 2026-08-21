@@ -110,6 +110,11 @@ class GSheetsManager:
                 if df is not None and not df.empty:
                     df = df.dropna(how="all")
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
+                    # Ensure all string/mixed columns are converted to object to prevent Pandas 2.x/3.x TypeErrors
+                    for c in df.columns:
+                        if c != "ID" and not ("Amount" in c or "Balance" in c):
+                            df[c] = df[c].astype(object)
+                    
                     if sheet_name == "Customers":
                         if "Primary Service" not in df.columns:
                             for alt in ["Primary Service / Purpose", "Primary Service", "Service"]:
@@ -151,10 +156,16 @@ class GSheetsManager:
     def update_row(sheet_name, row_id, updated_dict):
         df = GSheetsManager.get_df(sheet_name)
         if not df.empty and "ID" in df.columns:
-            idx = df.index[df["ID"].astype(str) == str(row_id)].tolist()
+            id_series = df["ID"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            target_id = str(row_id).replace('.0', '').strip()
+            idx = df.index[id_series == target_id].tolist()
             if idx:
                 for k, v in updated_dict.items():
                     clean_k = k.replace('_', ' ').strip()
+                    if clean_k not in df.columns:
+                        df[clean_k] = None
+                    if df[clean_k].dtype != object:
+                        df[clean_k] = df[clean_k].astype(object)
                     df.at[idx[0], clean_k] = v
                 GSheetsManager.save_df(sheet_name, df)
 
@@ -162,17 +173,23 @@ class GSheetsManager:
     def delete_row(sheet_name, row_id):
         df = GSheetsManager.get_df(sheet_name)
         if not df.empty and "ID" in df.columns:
-            df = df[df["ID"].astype(str) != str(row_id)]
+            id_series = df["ID"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            target_id = str(row_id).replace('.0', '').strip()
+            df = df[id_series != target_id]
             GSheetsManager.save_df(sheet_name, df)
 
     @staticmethod
     def update_invoice(invoice_no, updated_dict):
         df = GSheetsManager.get_df("Invoices_Archive")
         if not df.empty and "Invoice No" in df.columns:
-            idx = df.index[df["Invoice No"].astype(str) == str(invoice_no)].tolist()
+            idx = df.index[df["Invoice No"].astype(str).str.strip() == str(invoice_no).strip()].tolist()
             if idx:
                 for k, v in updated_dict.items():
                     clean_k = k.replace('_', ' ').strip()
+                    if clean_k not in df.columns:
+                        df[clean_k] = None
+                    if df[clean_k].dtype != object:
+                        df[clean_k] = df[clean_k].astype(object)
                     df.at[idx[0], clean_k] = v
                 GSheetsManager.save_df("Invoices_Archive", df)
 
@@ -180,7 +197,7 @@ class GSheetsManager:
     def delete_invoice(invoice_no):
         df = GSheetsManager.get_df("Invoices_Archive")
         if not df.empty and "Invoice No" in df.columns:
-            df = df[df["Invoice No"].astype(str) != str(invoice_no)]
+            df = df[df["Invoice No"].astype(str).str.strip() != str(invoice_no).strip()]
             GSheetsManager.save_df("Invoices_Archive", df)
 
     @staticmethod
@@ -309,6 +326,7 @@ def render_top_logos():
                 st.image(LOGO_PROPERTY, use_container_width=True)
         st.markdown("<hr style='margin: 12px 0 20px 0; border: 0; height: 1px; background: #E2E8F0;'>", unsafe_allow_html=True)
 
+# ----------------- 🔒 SECURE LOGIN SCREEN -----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -339,6 +357,7 @@ if not st.session_state.logged_in:
 
 render_top_logos()
 
+# ----------------- NAVIGATION MENU -----------------
 if "current_page" not in st.session_state:
     st.session_state.current_page = "📊 Dashboard"
 
@@ -815,18 +834,18 @@ elif menu == "🧾 Generate Bill / Voucher":
                     if btn_up_col.button("🔄 Update Invoice Record", key=f"up_btn_{sel_inv_no}", use_container_width=True):
                         if inv_auth_pin == GSheetsManager.get_pin():
                             GSheetsManager.update_invoice(sel_inv_no, {
-                                "Date": up_date,
-                                "Customer Name": up_cname,
+                                "Date": str(up_date),
+                                "Customer Name": str(up_cname),
                                 "Mobile Number": str(up_cphone).strip(),
-                                "Service 1": up_s1,
-                                "Amount 1": up_amt1,
-                                "Service 2": up_s2,
-                                "Amount 2": up_amt2,
-                                "Total Amount": up_tot,
-                                "Paid Amount": up_rec,
-                                "Pending Amount": up_baki,
-                                "Payment Mode": up_mode,
-                                "Remarks": up_remarks
+                                "Service 1": str(up_s1),
+                                "Amount 1": float(up_amt1),
+                                "Service 2": str(up_s2),
+                                "Amount 2": float(up_amt2),
+                                "Total Amount": float(up_tot),
+                                "Paid Amount": float(up_rec),
+                                "Pending Amount": float(up_baki),
+                                "Payment Mode": str(up_mode),
+                                "Remarks": str(up_remarks)
                             })
                             st.success(f"✅ Invoice #{sel_inv_no} updated in Google Sheets!")
                             st.rerun()
@@ -875,44 +894,45 @@ elif menu == "🧾 Generate Bill / Voucher":
         df_exp = GSheetsManager.get_df("Expense")
         
         if not df_exp.empty and "ID" in df_exp.columns:
-            sel_exp_options = [f"ID #{r['ID']} - {r.get('Expense Name', '')} ({r.get('Date', '')}) | ₹{r.get('Amount', 0)}" for _, r in df_exp.iterrows()]
-            chosen_exp_str = st.selectbox("Select Voucher / Expense to Modify:", sel_exp_options, key="edit_exp_select")
+            exp_clean = df_exp[df_exp["ID"].notna()].copy()
+            exp_ids = exp_clean["ID"].tolist()
+            exp_labels = [f"ID #{r['ID']} - {str(r.get('Expense Name', ''))} ({str(r.get('Date', ''))}) | ₹{r.get('Amount', 0)}" for _, r in exp_clean.iterrows()]
             
-            if chosen_exp_str:
-                sel_exp_id = int(chosen_exp_str.split(" ")[1].replace("#", ""))
-                exp_row = df_exp[df_exp["ID"].astype(str) == str(sel_exp_id)].iloc[0]
+            chosen_e_idx = st.selectbox("Select Voucher / Expense to Modify:", range(len(exp_labels)), format_func=lambda i: exp_labels[i], key="edit_exp_select_idx")
+            sel_exp_id = exp_ids[chosen_e_idx]
+            exp_row = exp_clean[exp_clean["ID"].astype(str).str.replace(r'\.0$', '', regex=True) == str(sel_exp_id).replace('.0', '')].iloc[0]
+            
+            with st.expander(f"📝 Edit Expense Voucher #{sel_exp_id}", expanded=True):
+                up_ed1, up_ed2 = st.columns(2)
+                up_e_date = up_ed1.text_input("Date", str(exp_row.get("Date", "")), key=f"e_dt_{sel_exp_id}")
+                up_e_name = up_ed2.text_input("Expense Description / Paid To", str(exp_row.get("Expense Name", "")), key=f"e_nm_{sel_exp_id}")
                 
-                with st.expander(f"📝 Edit Expense Voucher #{sel_exp_id}", expanded=True):
-                    up_ed1, up_ed2 = st.columns(2)
-                    up_e_date = up_ed1.text_input("Date", str(exp_row.get("Date", "")), key=f"e_dt_{sel_exp_id}")
-                    up_e_name = up_ed2.text_input("Expense Description / Paid To", str(exp_row.get("Expense Name", "")), key=f"e_nm_{sel_exp_id}")
-                    
-                    up_ed3, up_ed4 = st.columns(2)
-                    up_e_amt = up_ed3.number_input("Amount (₹)", value=float(exp_row.get("Amount", 0.0)), step=50.0, key=f"e_am_{sel_exp_id}")
-                    up_e_notes = up_ed4.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
-                    
-                    st.markdown("🔒 **Security Authorization:**")
-                    exp_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
-                    
-                    eb_up_col, eb_del_col = st.columns(2)
-                    if eb_up_col.button("🔄 Update Voucher", key=f"up_exp_btn_{sel_exp_id}", use_container_width=True):
-                        if exp_auth_pin == GSheetsManager.get_pin():
-                            GSheetsManager.update_row("Expense", sel_exp_id, {
-                                "Date": up_e_date, "Expense Name": up_e_name,
-                                "Amount": up_e_amt, "Notes": up_e_notes
-                            })
-                            st.success(f"✅ Voucher #{sel_exp_id} updated in Google Sheets!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Incorrect Security PIN!")
-                            
-                    if eb_del_col.button("🗑️ Delete Voucher", key=f"del_exp_btn_{sel_exp_id}", type="primary", use_container_width=True):
-                        if exp_auth_pin == GSheetsManager.get_pin():
-                            GSheetsManager.delete_row("Expense", sel_exp_id)
-                            st.warning(f"🗑️ Voucher #{sel_exp_id} deleted!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Incorrect Security PIN!")
+                up_ed3, up_ed4 = st.columns(2)
+                up_e_amt = up_ed3.number_input("Amount (₹)", value=float(pd.to_numeric(exp_row.get("Amount", 0.0), errors='coerce') or 0.0), step=50.0, key=f"e_am_{sel_exp_id}")
+                up_e_notes = up_ed4.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
+                
+                st.markdown("🔒 **Security Authorization:**")
+                exp_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
+                
+                eb_up_col, eb_del_col = st.columns(2)
+                if eb_up_col.button("🔄 Update Voucher", key=f"up_exp_btn_{sel_exp_id}", use_container_width=True):
+                    if exp_auth_pin == GSheetsManager.get_pin():
+                        GSheetsManager.update_row("Expense", sel_exp_id, {
+                            "Date": str(up_e_date), "Expense Name": str(up_e_name),
+                            "Amount": float(up_e_amt), "Notes": str(up_e_notes)
+                        })
+                        st.success(f"✅ Voucher #{sel_exp_id} updated in Google Sheets!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Incorrect Security PIN!")
+                        
+                if eb_del_col.button("🗑️ Delete Voucher", key=f"del_exp_btn_{sel_exp_id}", type="primary", use_container_width=True):
+                    if exp_auth_pin == GSheetsManager.get_pin():
+                        GSheetsManager.delete_row("Expense", sel_exp_id)
+                        st.warning(f"🗑️ Voucher #{sel_exp_id} deleted!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Incorrect Security PIN!")
         else:
             st.info("No expense vouchers found to edit.")
 
@@ -921,10 +941,13 @@ elif menu == "🧾 Generate Bill / Voucher":
         if not df_baki.empty and "Pending Amount" in df_baki.columns:
             pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
             if not pending.empty:
-                sel_acc = st.selectbox("Select Due Account:", [f"ID #{r['ID']} - {r['Customer Name']} | Pending: ₹{r['Pending Amount']}" for _, r in pending.iterrows()])
-                sel_id = int(sel_acc.split(" ")[1].replace("#", ""))
+                pending_ids = pending["ID"].tolist()
+                pending_labels = [f"ID #{r['ID']} - {r['Customer Name']} | Pending: ₹{r['Pending Amount']}" for _, r in pending.iterrows()]
                 
-                r = df_baki[df_baki["ID"].astype(str) == str(sel_id)].iloc[0]
+                sel_p_idx = st.selectbox("Select Due Account:", range(len(pending_labels)), format_func=lambda i: pending_labels[i])
+                sel_id = pending_ids[sel_p_idx]
+                
+                r = pending[pending["ID"].astype(str).str.replace(r'\.0$', '', regex=True) == str(sel_id).replace('.0', '')].iloc[0]
                 c_name = str(r.get('Customer Name', ''))
                 c_serv = str(r.get('Service Details', 'Service'))
                 curr_pend = float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce'))
@@ -938,16 +961,16 @@ elif menu == "🧾 Generate Bill / Voucher":
                     new_stat = "Cleared" if new_pending <= 0 else "Pending"
                     
                     GSheetsManager.update_row("Udhar_Baki", sel_id, {
-                        "Paid Amount": new_paid,
-                        "Pending Amount": new_pending,
-                        "Status": new_stat
+                        "Paid Amount": float(new_paid),
+                        "Pending Amount": float(new_pending),
+                        "Status": str(new_stat)
                     })
                     GSheetsManager.append_row("Income", {
                         "Date": datetime.now().strftime("%Y-%m-%d"),
-                        "Customer Person": c_name,
+                        "Customer Person": str(c_name),
                         "Work Details": f"Due Settlement ({c_serv})",
-                        "Amount": s_amt,
-                        "Payment Mode": s_mode,
+                        "Amount": float(s_amt),
+                        "Payment Mode": str(s_mode),
                         "Notes": f"Due Rec #{sel_id}"
                     })
                     st.success("Due Settled in Google Sheets!")
@@ -980,7 +1003,7 @@ elif menu == "📋 Due Collections":
                 
                 chosen_idx = st.selectbox("Select Due Record to Edit / Delete:", range(len(due_display_list)), format_func=lambda i: due_display_list[i], key="due_mod_select_idx")
                 sel_due_id = due_id_list[chosen_idx]
-                due_r = due_records_clean[due_records_clean["ID"].astype(str) == str(sel_due_id)].iloc[0]
+                due_r = due_records_clean[due_records_clean["ID"].astype(str).str.replace(r'\.0$', '', regex=True) == str(sel_due_id).replace('.0', '')].iloc[0]
                 
                 with st.expander(f"📝 Edit Due Record #{sel_due_id} - {due_r.get('Customer Name', '')}", expanded=True):
                     dc1, dc2 = st.columns(2)
@@ -1009,10 +1032,10 @@ elif menu == "📋 Due Collections":
                     if db_up_c.button("🔄 Update Due Record", key=f"btn_up_due_{sel_due_id}", use_container_width=True):
                         if due_auth_pin == GSheetsManager.get_pin():
                             GSheetsManager.update_row("Udhar_Baki", sel_due_id, {
-                                "Date": up_d_date, "Customer Name": up_d_name,
-                                "Mobile Number": str(up_d_phone).strip(), "Service Details": up_d_serv,
-                                "Total Amount": up_d_tot, "Paid Amount": up_d_paid,
-                                "Pending Amount": up_d_pending, "Due Date": up_d_due_dt, "Status": up_d_stat
+                                "Date": str(up_d_date), "Customer Name": str(up_d_name),
+                                "Mobile Number": str(up_d_phone).strip(), "Service Details": str(up_d_serv),
+                                "Total Amount": float(up_d_tot), "Paid Amount": float(up_d_paid),
+                                "Pending Amount": float(up_d_pending), "Due Date": str(up_d_due_dt), "Status": str(up_d_stat)
                             })
                             st.success(f"✅ Due Record #{sel_due_id} updated in Google Sheets!")
                             st.rerun()
@@ -1289,7 +1312,6 @@ elif menu == "👥 Customers Directory":
             st.dataframe(filtered_df, use_container_width=True)
             st.divider()
             
-            # --- 100% SAFE DROPDOWN LOOKUP (NO STRING SPLIT ERROR) ---
             clean_cust_rows = df_c[df_c["ID"].notna()].copy()
             if not clean_cust_rows.empty:
                 cust_ids = clean_cust_rows["ID"].tolist()
@@ -1306,7 +1328,7 @@ elif menu == "👥 Customers Directory":
                 )
                 
                 sel_c_id = cust_ids[selected_idx]
-                c_row = clean_cust_rows[clean_cust_rows["ID"].astype(str) == str(sel_c_id)].iloc[0]
+                c_row = clean_cust_rows[clean_cust_rows["ID"].astype(str).str.replace(r'\.0$', '', regex=True) == str(sel_c_id).replace('.0', '')].iloc[0]
                 
                 with st.expander(f"📝 Edit Client Profile #{sel_c_id} - {c_row.get('Customer Name', '')}", expanded=True):
                     ec1, ec2 = st.columns(2)
@@ -1329,8 +1351,8 @@ elif menu == "👥 Customers Directory":
                     if b_col1.button("🔄 Update Customer Details", key=f"btn_up_{sel_c_id}", use_container_width=True):
                         if edit_pin == GSheetsManager.get_pin():
                             GSheetsManager.update_row("Customers", sel_c_id, {
-                                "Customer Name": u_cname, "Mobile Number": str(u_cphone).strip(),
-                                "City Address": u_caddr, "Primary Service": u_cserv, "Notes": u_cnotes
+                                "Customer Name": str(u_cname), "Mobile Number": str(u_cphone).strip(),
+                                "City Address": str(u_caddr), "Primary Service": str(u_cserv), "Notes": str(u_cnotes)
                             })
                             st.success("Client profile updated successfully in Google Sheets!")
                             st.rerun()
