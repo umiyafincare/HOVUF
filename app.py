@@ -112,12 +112,12 @@ class GSheetsManager:
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
                     if sheet_name == "Customers":
                         if "Primary Service" not in df.columns:
-                            for alt in ["Primary Service / Purpose", "Primary Service"]:
+                            for alt in ["Primary Service / Purpose", "Primary Service", "Service"]:
                                 if alt in df.columns:
                                     df["Primary Service"] = df[alt]
                                     break
                         if "City Address" not in df.columns:
-                            for alt in ["City/Address", "City Address"]:
+                            for alt in ["City/Address", "City Address", "Address", "City"]:
                                 if alt in df.columns:
                                     df["City Address"] = df[alt]
                                     break
@@ -309,7 +309,6 @@ def render_top_logos():
                 st.image(LOGO_PROPERTY, use_container_width=True)
         st.markdown("<hr style='margin: 12px 0 20px 0; border: 0; height: 1px; background: #E2E8F0;'>", unsafe_allow_html=True)
 
-# ----------------- 🔒 SECURE LOGIN SCREEN -----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -340,7 +339,6 @@ if not st.session_state.logged_in:
 
 render_top_logos()
 
-# ----------------- NAVIGATION MENU -----------------
 if "current_page" not in st.session_state:
     st.session_state.current_page = "📊 Dashboard"
 
@@ -972,12 +970,17 @@ elif menu == "📋 Due Collections":
         st.markdown("##### 🔐 Modify or Delete Customer Due Record")
         df_b = GSheetsManager.get_df("Udhar_Baki")
         if not df_b.empty and "ID" in df_b.columns:
-            sel_due_opts = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) | Pending: ₹{r.get('Pending Amount', 0)}" for _, r in df_b.iterrows()]
-            chosen_due_str = st.selectbox("Select Due Record to Edit / Delete:", sel_due_opts, key="due_mod_select")
-            
-            if chosen_due_str:
-                sel_due_id = int(chosen_due_str.split(" ")[1].replace("#", ""))
-                due_r = df_b[df_b["ID"].astype(str) == str(sel_due_id)].iloc[0]
+            due_records_clean = df_b[df_b["ID"].notna()].copy()
+            if not due_records_clean.empty:
+                due_id_list = due_records_clean["ID"].tolist()
+                due_display_list = [
+                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({str(r.get('Mobile Number', ''))}) | Pending: ₹{r.get('Pending Amount', 0)}" 
+                    for _, r in due_records_clean.iterrows()
+                ]
+                
+                chosen_idx = st.selectbox("Select Due Record to Edit / Delete:", range(len(due_display_list)), format_func=lambda i: due_display_list[i], key="due_mod_select_idx")
+                sel_due_id = due_id_list[chosen_idx]
+                due_r = due_records_clean[due_records_clean["ID"].astype(str) == str(sel_due_id)].iloc[0]
                 
                 with st.expander(f"📝 Edit Due Record #{sel_due_id} - {due_r.get('Customer Name', '')}", expanded=True):
                     dc1, dc2 = st.columns(2)
@@ -989,8 +992,8 @@ elif menu == "📋 Due Collections":
                     up_d_serv = dc4.text_input("Service Details", str(due_r.get("Service Details", "Service")), key=f"d_sv_{sel_due_id}")
                     
                     dc5, dc6 = st.columns(2)
-                    up_d_tot = dc5.number_input("Total Amount (₹)", value=float(due_r.get("Total Amount", 0.0)), step=100.0, key=f"d_tot_{sel_due_id}")
-                    up_d_paid = dc6.number_input("Paid Amount (₹)", value=float(due_r.get("Paid Amount", 0.0)), max_value=float(up_d_tot), step=100.0, key=f"d_pd_{sel_due_id}")
+                    up_d_tot = dc5.number_input("Total Amount (₹)", value=float(pd.to_numeric(due_r.get("Total Amount", 0.0), errors='coerce') or 0.0), step=100.0, key=f"d_tot_{sel_due_id}")
+                    up_d_paid = dc6.number_input("Paid Amount (₹)", value=float(pd.to_numeric(due_r.get("Paid Amount", 0.0), errors='coerce') or 0.0), max_value=float(up_d_tot), step=100.0, key=f"d_pd_{sel_due_id}")
                     
                     up_d_pending = up_d_tot - up_d_paid
                     st.write(f"**Recalculated Pending Amount:** ₹ {up_d_pending:,.2f}")
@@ -1233,7 +1236,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 7. CUSTOMERS DIRECTORY -----------------
+# ----------------- 7. CUSTOMERS DIRECTORY (SAFE LOOKUP & EDIT) -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast (Cloud)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -1272,7 +1275,7 @@ elif menu == "👥 Customers Directory":
                     
     with tab_list:
         df_c = GSheetsManager.get_df("Customers")
-        if not df_c.empty:
+        if not df_c.empty and "ID" in df_c.columns:
             search_query = st.text_input("🔍 Quick Search by Name, Mobile, Address or Service:", "")
             if search_query:
                 cond = pd.Series([False]*len(df_c))
@@ -1286,12 +1289,24 @@ elif menu == "👥 Customers Directory":
             st.dataframe(filtered_df, use_container_width=True)
             st.divider()
             
-            sel_c_options = [f"ID #{r['ID']} - {r.get('Customer Name', '')} ({r.get('Mobile Number', '')})" for _, r in df_c.iterrows()]
-            sel_c_str = st.selectbox("Select Customer to Edit / Update / Delete:", sel_c_options)
-            
-            if sel_c_str:
-                sel_c_id = int(sel_c_str.split(" ")[1].replace("#", ""))
-                c_row = df_c[df_c["ID"].astype(str) == str(sel_c_id)].iloc[0]
+            # --- 100% SAFE DROPDOWN LOOKUP (NO STRING SPLIT ERROR) ---
+            clean_cust_rows = df_c[df_c["ID"].notna()].copy()
+            if not clean_cust_rows.empty:
+                cust_ids = clean_cust_rows["ID"].tolist()
+                cust_labels = [
+                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({str(r.get('Mobile Number', ''))})" 
+                    for _, r in clean_cust_rows.iterrows()
+                ]
+                
+                selected_idx = st.selectbox(
+                    "Select Customer to Edit / Update / Delete:", 
+                    range(len(cust_labels)), 
+                    format_func=lambda idx: cust_labels[idx],
+                    key="cust_edit_select_box"
+                )
+                
+                sel_c_id = cust_ids[selected_idx]
+                c_row = clean_cust_rows[clean_cust_rows["ID"].astype(str) == str(sel_c_id)].iloc[0]
                 
                 with st.expander(f"📝 Edit Client Profile #{sel_c_id} - {c_row.get('Customer Name', '')}", expanded=True):
                     ec1, ec2 = st.columns(2)
@@ -1299,7 +1314,7 @@ elif menu == "👥 Customers Directory":
                     u_cphone = ec2.text_input("Mobile Number *", str(c_row.get("Mobile Number", "")))
                     
                     ec3, ec4 = st.columns(2)
-                    u_caddr = ec3.text_input("Address / City / Village", str(c_row.get("City Address", "Kadi")) if pd.notna(c_row.get("City Address")) else "")
+                    u_caddr = ec3.text_input("Address / City / Village", str(c_row.get("City Address", "Kadi")) if pd.notna(c_row.get("City Address")) else "Kadi")
                     
                     curr_serv = str(c_row.get("Primary Service", "VISA"))
                     serv_idx = SERVICE_OPTIONS.index(curr_serv) if curr_serv in SERVICE_OPTIONS else 0
@@ -1333,29 +1348,31 @@ elif menu == "👥 Customers Directory":
             st.info("No registered clients found.")
 
     with tab_promo:
-        st.markdown("##### 📢 Bulk Broadcast & Promotion List")
+        st.markdown("##### 📢 Bulk Broadcast & Marketing Campaign")
         df_c = GSheetsManager.get_df("Customers")
         if not df_c.empty:
             serv_col_name = "Primary Service" if "Primary Service" in df_c.columns else df_c.columns[min(5, len(df_c.columns)-1)]
-            service_unique_list = list(df_c[serv_col_name].dropna().unique()) if serv_col_name in df_c.columns else []
+            service_unique_list = [str(x) for x in df_c[serv_col_name].dropna().unique() if str(x).strip() != ""] if serv_col_name in df_c.columns else []
             
-            sel_aud = st.selectbox("Select Target Audience:", ["All Clients"] + service_unique_list)
-            target_df = df_c if (sel_aud == "All Clients" or serv_col_name not in df_c.columns) else df_c[df_c[serv_col_name] == sel_aud]
+            sel_aud = st.selectbox("Select Target Audience:", ["All Clients"] + service_unique_list, key="broadcast_aud_sel")
+            target_df = df_c if (sel_aud == "All Clients" or serv_col_name not in df_c.columns) else df_c[df_c[serv_col_name].astype(str) == str(sel_aud)]
             
             st.write(f"**Total Recipients:** {len(target_df)}")
             display_cols = [c for c in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"] if c in target_df.columns]
             st.dataframe(target_df[display_cols], use_container_width=True)
             
             promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.")
-            for _, prow in target_df.head(10).iterrows():
-                p_phone = str(prow.get("Mobile Number", "")).strip()
+            
+            st.markdown("##### 📲 Click to Send WhatsApp Directly:")
+            for _, prow in target_df.head(25).iterrows():
+                p_phone = str(prow.get("Mobile Number", "")).replace(".0", "").strip()
                 p_name = prow.get("Customer Name", "Client")
                 p_city = prow.get("City Address", "Kadi")
-                if p_phone:
+                if p_phone and len(p_phone) >= 10:
                     p_url = f"https://wa.me/91{p_phone}?text={urllib.parse.quote(promo_msg)}"
                     st.markdown(f"👉 **{p_name}** ({p_phone}) - [{p_city}]: [📲 Send WhatsApp]({p_url})")
         else:
-            st.info("No client records available.")
+            st.info("No client records available for marketing broadcast.")
 
 # ----------------- 8. INCOME & EXPENSE MANAGEMENT -----------------
 elif menu == "💰 Income":
