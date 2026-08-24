@@ -101,6 +101,28 @@ DEFAULT_SCHEMAS = {
     "Settings": ["Setting Key", "Setting Value", "Updated Date"]
 }
 
+def format_to_ddmmyyyy(val):
+    if pd.isna(val) or val is None or str(val).strip() == "" or str(val).strip() == "None":
+        return ""
+    val_str = str(val).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(val_str.split(" ")[0], fmt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return val_str
+
+def parse_date_safely(val_str):
+    if not val_str or pd.isna(val_str):
+        return datetime.now().date()
+    val_clean = str(val_str).strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(val_clean, fmt).date()
+        except Exception:
+            pass
+    return datetime.now().date()
+
 class GSheetsManager:
     @staticmethod
     def get_df(sheet_name):
@@ -110,10 +132,15 @@ class GSheetsManager:
                 if df is not None and not df.empty:
                     df = df.dropna(how="all")
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
-                    # Ensure all string/mixed columns are converted to object to prevent Pandas 2.x/3.x TypeErrors
+                    
                     for c in df.columns:
                         if c != "ID" and not ("Amount" in c or "Balance" in c):
                             df[c] = df[c].astype(object)
+                    
+                    # Convert any date column to DD/MM/YYYY automatically
+                    for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
+                        if d_col in df.columns:
+                            df[d_col] = df[d_col].apply(format_to_ddmmyyyy)
                     
                     if sheet_name == "Customers":
                         if "Primary Service" not in df.columns:
@@ -146,6 +173,12 @@ class GSheetsManager:
         if "ID" in DEFAULT_SCHEMAS.get(sheet_name, []):
             new_id = 1 if df.empty or "ID" not in df.columns else (int(pd.to_numeric(df["ID"], errors='coerce').max()) + 1 if len(df["ID"].dropna()) > 0 else 1)
             row_dict["ID"] = new_id
+        
+        # Ensure all dates saved in DD/MM/YYYY
+        for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
+            if d_col in row_dict:
+                row_dict[d_col] = format_to_ddmmyyyy(row_dict[d_col])
+                
         clean_row = {k.replace('_', ' ').strip(): v for k, v in row_dict.items()}
         new_row_df = pd.DataFrame([clean_row])
         df = pd.concat([df, new_row_df], ignore_index=True)
@@ -162,6 +195,8 @@ class GSheetsManager:
             if idx:
                 for k, v in updated_dict.items():
                     clean_k = k.replace('_', ' ').strip()
+                    if clean_k in ["Date", "Created Date", "Due Date", "Updated Date"]:
+                        v = format_to_ddmmyyyy(v)
                     if clean_k not in df.columns:
                         df[clean_k] = None
                     if df[clean_k].dtype != object:
@@ -186,6 +221,8 @@ class GSheetsManager:
             if idx:
                 for k, v in updated_dict.items():
                     clean_k = k.replace('_', ' ').strip()
+                    if clean_k == "Date":
+                        v = format_to_ddmmyyyy(v)
                     if clean_k not in df.columns:
                         df[clean_k] = None
                     if df[clean_k].dtype != object:
@@ -206,7 +243,7 @@ class GSheetsManager:
         if not clean_p or not name:
             return
         df_c = GSheetsManager.get_df("Customers")
-        now_dt = datetime.now().strftime("%Y-%m-%d")
+        now_dt = datetime.now().strftime("%d/%m/%Y")
         if not df_c.empty and "Mobile Number" in df_c.columns:
             matched = df_c[df_c["Mobile Number"].astype(str).str.strip() == clean_p]
             if not matched.empty:
@@ -227,8 +264,7 @@ class GSheetsManager:
         try:
             df_s = GSheetsManager.get_df("Settings")
             if not df_s.empty:
-                key_col = None
-                val_col = None
+                key_col, val_col = None, None
                 for col in df_s.columns:
                     c_clean = str(col).lower().replace(" ", "").replace("_", "")
                     if "key" in c_clean:
@@ -251,7 +287,7 @@ class GSheetsManager:
     @staticmethod
     def set_pin(new_pin):
         df_s = GSheetsManager.get_df("Settings")
-        now_str = datetime.now().strftime("%Y-%m-%d")
+        now_str = datetime.now().strftime("%d/%m/%Y")
         clean_p = str(new_pin).strip()
         if df_s.empty or "Setting Key" not in df_s.columns:
             df_s = pd.DataFrame([{"Setting Key": "Master_PIN", "Setting Value": clean_p, "Updated Date": now_str}])
@@ -285,7 +321,7 @@ class GSheetsManager:
     @staticmethod
     def set_opening_balance(cash_op, bank_op):
         df_s = GSheetsManager.get_df("Settings")
-        now_str = datetime.now().strftime("%Y-%m-%d")
+        now_str = datetime.now().strftime("%d/%m/%Y")
         recs = [
             {"Setting Key": "Cash_Opening_Balance", "Setting Value": str(cash_op), "Updated Date": now_str},
             {"Setting Key": "Bank_Opening_Balance", "Setting Value": str(bank_op), "Updated Date": now_str}
@@ -451,7 +487,7 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     
     status_text = "PAID" if baki_amt <= 0 else f"PARTIAL (Balance: Rs. {baki_amt:,.2f})"
     meta_data = [
-        [f"<b>Invoice No:</b> {bill_no}", f"<b>Date:</b> {bill_date}"],
+        [f"<b>Invoice No:</b> {bill_no}", f"<b>Date:</b> {format_to_ddmmyyyy(bill_date)}"],
         [f"<b>Name:</b> {cust_name}", f"<b>Mobile:</b> {cust_phone}"],
         [f"<b>Payment Mode:</b> {pay_mode}", f"<b>Status:</b> {status_text}"]
     ]
@@ -498,11 +534,11 @@ if menu == "📊 Dashboard":
             for _, tr in pending_tasks.iterrows():
                 t_id = tr["ID"]
                 col_t1, col_t2, col_t3, col_t4, col_t5 = st.columns([1.5, 1.5, 2.5, 1.5, 1.5])
-                col_t1.write(f"📅 **{tr.get('Date')}**")
+                col_t1.write(f"📅 **{format_to_ddmmyyyy(tr.get('Date'))}**")
                 col_t2.write(f"⏰ {tr.get('Time')}")
                 col_t3.write(f"📌 **{tr.get('Task Details')}** ({tr.get('Person Name', 'Client')})")
                 if pd.notna(tr.get('Mobile')):
-                    t_msg = f"Reminder regarding: {tr.get('Task Details')} scheduled on {tr.get('Date')} at {tr.get('Time')}."
+                    t_msg = f"Reminder regarding: {tr.get('Task Details')} scheduled on {format_to_ddmmyyyy(tr.get('Date'))} at {tr.get('Time')}."
                     t_url = f"https://wa.me/91{str(tr.get('Mobile')).strip()}?text={urllib.parse.quote(t_msg)}"
                     col_t4.markdown(f"[📲 WhatsApp]({t_url})")
                 else:
@@ -517,7 +553,7 @@ if menu == "📊 Dashboard":
     df_exp = GSheetsManager.get_df("Expense")
     df_baki = GSheetsManager.get_df("Udhar_Baki")
     df_cust = GSheetsManager.get_df("Customers")
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now().strftime("%d/%m/%Y")
     
     today_inc = pd.to_numeric(df_inc[df_inc["Date"] == today_str]["Amount"], errors='coerce').sum() if not df_inc.empty and "Date" in df_inc.columns else 0.0
     total_inc = pd.to_numeric(df_inc["Amount"], errors='coerce').sum() if not df_inc.empty and "Amount" in df_inc.columns else 0.0
@@ -595,7 +631,7 @@ if menu == "📊 Dashboard":
                 b3.write(f"🏷️ *{serv_name}*")
                 due_val = float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce'))
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
-                b5.write(f"Date: {r.get('Due Date')}")
+                b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
                 msg = f"Hello {r.get('Customer Name')}, payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {due_val:,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
                 wa_url = f"https://wa.me/91{str(r.get('Mobile Number')).strip()}?text={urllib.parse.quote(msg)}"
                 b6.markdown(f"[📲 Send WhatsApp]({wa_url})", unsafe_allow_html=True)
@@ -614,7 +650,7 @@ elif menu == "⏰ Task Reminders":
             pname = c2.text_input("Associated Person Name *")
             c3, c4 = st.columns(2)
             rphone = c3.text_input("Mobile Number (10 Digits)")
-            rdate = c4.date_input("📅 Reminder Date", datetime.now()).strftime("%Y-%m-%d")
+            rdate = c4.date_input("📅 Reminder Date", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
             rtime = st.time_input("⏰ Reminder Time", time(11, 0)).strftime("%I:%M %p")
             if st.form_submit_button("💾 Save Reminder", use_container_width=True):
                 if tdesc and pname:
@@ -632,7 +668,7 @@ elif menu == "⏰ Task Reminders":
             for _, r in pending_list.iterrows():
                 r_id = r["ID"]
                 c1, c2, c3, c4 = st.columns([2, 2, 3, 2])
-                c1.write(f"📅 {r['Date']} | ⏰ {r['Time']}")
+                c1.write(f"📅 {format_to_ddmmyyyy(r['Date'])} | ⏰ {r['Time']}")
                 c2.write(f"👤 {r.get('Person Name')}")
                 c3.write(f"📌 {r.get('Task Details')}")
                 if c4.button("✅ Done", key=f"done_{r_id}"):
@@ -721,7 +757,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         
         c3, c4 = st.columns(2)
         bill_no = c3.text_input("Invoice No.", f"INV-{datetime.now().strftime('%Y%m%d%H%M')}")
-        bill_date = c4.date_input("Invoice Date", datetime.now()).strftime("%Y-%m-%d")
+        bill_date = c4.date_input("Invoice Date", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
         
         c5, c6 = st.columns(2)
         default_s_idx = SERVICE_OPTIONS.index(init_service) if init_service in SERVICE_OPTIONS else 0
@@ -740,7 +776,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         cp1, cp2, cp3 = st.columns(3)
         pay_mode = cp1.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque", "Pending / Due"])
         rec_amt = cp2.number_input("Received Amount (₹)", min_value=0.0, max_value=float(total_bill), value=float(total_bill) if pay_mode != "Pending / Due" else 0.0, step=100.0)
-        due_date = cp3.date_input("Due Date (If balance pending)", datetime.now()).strftime("%Y-%m-%d")
+        due_date = cp3.date_input("Due Date (If balance pending)", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
         baki_amt = total_bill - rec_amt
         item_desc = s1 + (f" + {s2}" if s2 else "")
         
@@ -779,7 +815,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 col_dwn, col_wa = st.columns(2)
                 col_dwn.download_button("📥 Download PDF Invoice", data=pdf_data, file_name=f"Invoice_{cust_name}_{bill_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
                 
-                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n"
+                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n📅 *Date:* {bill_date}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n"
                 if baki_amt > 0:
                     wa_msg += f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n"
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
@@ -795,7 +831,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         df_arch = GSheetsManager.get_df("Invoices_Archive")
         
         if not df_arch.empty and "Invoice No" in df_arch.columns:
-            sel_inv_options = [f"{r['Invoice No']} - {r['Customer Name']} ({r['Date']}) | Total: ₹{r['Total Amount']}" for _, r in df_arch.iterrows()]
+            sel_inv_options = [f"{r['Invoice No']} - {r['Customer Name']} ({format_to_ddmmyyyy(r['Date'])}) | Total: ₹{r['Total Amount']}" for _, r in df_arch.iterrows()]
             chosen_inv_str = st.selectbox("Select Invoice to Modify / Delete:", sel_inv_options, key="edit_inv_select")
             
             if chosen_inv_str:
@@ -804,7 +840,8 @@ elif menu == "🧾 Generate Bill / Voucher":
                 
                 with st.expander(f"📝 Edit Invoice #{sel_inv_no} Details", expanded=True):
                     ed_c1, ed_c2 = st.columns(2)
-                    up_date = ed_c1.text_input("Invoice Date", str(inv_row.get("Date", "")))
+                    raw_inv_dt = parse_date_safely(inv_row.get("Date", ""))
+                    up_date = ed_c1.date_input("Invoice Date", raw_inv_dt, format="DD/MM/YYYY", key=f"inv_dt_inp_{sel_inv_no}").strftime("%d/%m/%Y")
                     up_cname = ed_c2.text_input("Customer Name", str(inv_row.get("Customer Name", "")))
                     
                     ed_c3, ed_c4 = st.columns(2)
@@ -865,7 +902,7 @@ elif menu == "🧾 Generate Bill / Voucher":
     elif bill_type == "🖨️ Re-Print Old Invoice":
         df_arch = GSheetsManager.get_df("Invoices_Archive")
         if not df_arch.empty and "Invoice No" in df_arch.columns:
-            sel_inv = st.selectbox("Select Invoice:", [f"{r['Invoice No']} - {r['Customer Name']} ({r['Date']})" for _, r in df_arch.iterrows()])
+            sel_inv = st.selectbox("Select Invoice:", [f"{r['Invoice No']} - {r['Customer Name']} ({format_to_ddmmyyyy(r['Date'])})" for _, r in df_arch.iterrows()])
             sel_no = sel_inv.split(" - ")[0]
             r = df_arch[df_arch["Invoice No"] == sel_no].iloc[0]
             re_pdf = generate_invoice_pdf_buffer(str(r["Invoice No"]), str(r["Date"]), str(r["Customer Name"]), str(r["Mobile Number"]), str(r.get("Service 1", "")), float(r.get("Amount 1", 0)), str(r.get("Service 2", "")), float(r.get("Amount 2", 0)), float(r["Total Amount"]), float(r.get("Paid Amount", 0)), float(r.get("Pending Amount", 0)), str(r.get("Payment Mode", "")), str(r.get("Remarks", "")))
@@ -876,7 +913,7 @@ elif menu == "🧾 Generate Bill / Voucher":
     elif bill_type == "Payment Voucher (Expense)":
         c1, c2 = st.columns(2)
         v_no = c1.text_input("Voucher No.", f"VOU-{datetime.now().strftime('%Y%m%d%H%M')}")
-        v_date = c2.date_input("Date", datetime.now()).strftime("%Y-%m-%d")
+        v_date = c2.date_input("Date", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
         p_name = c1.text_input("Paid To *")
         p_amt = c2.number_input("Amount (₹) *", min_value=0.0, step=50.0)
         p_mode = c1.selectbox("Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
@@ -896,7 +933,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         if not df_exp.empty and "ID" in df_exp.columns:
             exp_clean = df_exp[df_exp["ID"].notna()].copy()
             exp_ids = exp_clean["ID"].tolist()
-            exp_labels = [f"ID #{r['ID']} - {str(r.get('Expense Name', ''))} ({str(r.get('Date', ''))}) | ₹{r.get('Amount', 0)}" for _, r in exp_clean.iterrows()]
+            exp_labels = [f"ID #{r['ID']} - {str(r.get('Expense Name', ''))} ({format_to_ddmmyyyy(r.get('Date', ''))}) | ₹{r.get('Amount', 0)}" for _, r in exp_clean.iterrows()]
             
             chosen_e_idx = st.selectbox("Select Voucher / Expense to Modify:", range(len(exp_labels)), format_func=lambda i: exp_labels[i], key="edit_exp_select_idx")
             sel_exp_id = exp_ids[chosen_e_idx]
@@ -904,7 +941,8 @@ elif menu == "🧾 Generate Bill / Voucher":
             
             with st.expander(f"📝 Edit Expense Voucher #{sel_exp_id}", expanded=True):
                 up_ed1, up_ed2 = st.columns(2)
-                up_e_date = up_ed1.text_input("Date", str(exp_row.get("Date", "")), key=f"e_dt_{sel_exp_id}")
+                raw_exp_dt = parse_date_safely(exp_row.get("Date", ""))
+                up_e_date = up_ed1.date_input("Date", raw_exp_dt, format="DD/MM/YYYY", key=f"e_dt_inp_{sel_exp_id}").strftime("%d/%m/%Y")
                 up_e_name = up_ed2.text_input("Expense Description / Paid To", str(exp_row.get("Expense Name", "")), key=f"e_nm_{sel_exp_id}")
                 
                 up_ed3, up_ed4 = st.columns(2)
@@ -966,7 +1004,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                         "Status": str(new_stat)
                     })
                     GSheetsManager.append_row("Income", {
-                        "Date": datetime.now().strftime("%Y-%m-%d"),
+                        "Date": datetime.now().strftime("%d/%m/%Y"),
                         "Customer Person": str(c_name),
                         "Work Details": f"Due Settlement ({c_serv})",
                         "Amount": float(s_amt),
@@ -1007,7 +1045,8 @@ elif menu == "📋 Due Collections":
                 
                 with st.expander(f"📝 Edit Due Record #{sel_due_id} - {due_r.get('Customer Name', '')}", expanded=True):
                     dc1, dc2 = st.columns(2)
-                    up_d_date = dc1.text_input("Entry Date", str(due_r.get("Date", "")), key=f"d_dt_{sel_due_id}")
+                    raw_d_dt = parse_date_safely(due_r.get("Date", ""))
+                    up_d_date = dc1.date_input("Entry Date", raw_d_dt, format="DD/MM/YYYY", key=f"d_dt_inp_{sel_due_id}").strftime("%d/%m/%Y")
                     up_d_name = dc2.text_input("Customer Name", str(due_r.get("Customer Name", "")), key=f"d_nm_{sel_due_id}")
                     
                     dc3, dc4 = st.columns(2)
@@ -1022,7 +1061,8 @@ elif menu == "📋 Due Collections":
                     st.write(f"**Recalculated Pending Amount:** ₹ {up_d_pending:,.2f}")
                     
                     dc7, dc8 = st.columns(2)
-                    up_d_due_dt = dc7.text_input("Due Date", str(due_r.get("Due Date", "")), key=f"d_ddt_{sel_due_id}")
+                    raw_due_dt = parse_date_safely(due_r.get("Due Date", ""))
+                    up_d_due_dt = dc7.date_input("Due Date", raw_due_dt, format="DD/MM/YYYY", key=f"d_ddt_inp_{sel_due_id}").strftime("%d/%m/%Y")
                     up_d_stat = dc8.selectbox("Status", ["Pending", "Cleared"], index=0 if up_d_pending > 0 else 1, key=f"d_st_{sel_due_id}")
                     
                     st.markdown("🔒 **Security Authorization:**")
@@ -1056,16 +1096,27 @@ elif menu == "📋 Due Collections":
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
-    d_from = c1.date_input("From Date", datetime.now().replace(day=1)).strftime("%Y-%m-%d")
-    d_to = c2.date_input("To Date", datetime.now()).strftime("%Y-%m-%d")
+    d_from = c1.date_input("From Date", datetime.now().replace(day=1), format="DD/MM/YYYY")
+    d_to = c2.date_input("To Date", datetime.now(), format="DD/MM/YYYY")
+    
+    d_from_str = d_from.strftime("%d/%m/%Y")
+    d_to_str = d_to.strftime("%d/%m/%Y")
     
     df_i = GSheetsManager.get_df("Income")
     df_e = GSheetsManager.get_df("Expense")
     df_b = GSheetsManager.get_df("Udhar_Baki")
     
-    f_i = df_i[(df_i["Date"] >= d_from) & (df_i["Date"] <= d_to)] if not df_i.empty and "Date" in df_i.columns else pd.DataFrame()
-    f_e = df_e[(df_e["Date"] >= d_from) & (df_e["Date"] <= d_to)] if not df_e.empty and "Date" in df_e.columns else pd.DataFrame()
-    f_b = df_b[(df_b["Date"] >= d_from) & (df_b["Date"] <= d_to)] if not df_b.empty and "Date" in df_b.columns else (df_b if not df_b.empty else pd.DataFrame())
+    def filter_by_date_range(df, col_name, start_date, end_date):
+        if df.empty or col_name not in df.columns:
+            return pd.DataFrame()
+        temp_df = df.copy()
+        temp_df['_parsed_date'] = temp_df[col_name].apply(parse_date_safely)
+        filtered = temp_df[(temp_df['_parsed_date'] >= start_date) & (temp_df['_parsed_date'] <= end_date)].drop(columns=['_parsed_date'])
+        return filtered
+
+    f_i = filter_by_date_range(df_i, "Date", d_from, d_to)
+    f_e = filter_by_date_range(df_e, "Date", d_from, d_to)
+    f_b = filter_by_date_range(df_b, "Date", d_from, d_to) if not df_b.empty else pd.DataFrame()
     
     t_i = pd.to_numeric(f_i["Amount"], errors='coerce').sum() if not f_i.empty and "Amount" in f_i.columns else 0.0
     t_e = pd.to_numeric(f_e["Amount"], errors='coerce').sum() if not f_e.empty and "Amount" in f_e.columns else 0.0
@@ -1073,7 +1124,7 @@ elif menu == "📄 Reports & PDF":
     tot_op = cash_op + bank_op
     closing_bal = tot_op + t_i - t_e
     
-    st.info(f"**Period:** {d_from} to {d_to} | **Revenue:** ₹{t_i:,.2f} | **Expenses:** ₹{t_e:,.2f} | **Closing Balance:** ₹{closing_bal:,.2f}")
+    st.info(f"**Period:** {d_from_str} to {d_to_str} | **Revenue:** ₹{t_i:,.2f} | **Expenses:** ₹{t_e:,.2f} | **Closing Balance:** ₹{closing_bal:,.2f}")
     
     def generate_statement_pdf_landscape(period_from, period_to, df_inc, df_exp, df_due, op_bal, tot_rev, tot_exp, cl_bal):
         buf = io.BytesIO()
@@ -1139,7 +1190,7 @@ elif menu == "📄 Reports & PDF":
             ]]
             for _, r in df_inc.iterrows():
                 i_rows.append([
-                    Paragraph(str(r.get("Date", "-")), tbl_text),
+                    Paragraph(format_to_ddmmyyyy(r.get("Date", "-")), tbl_text),
                     Paragraph(str(r.get("Customer Person", "-")), tbl_text),
                     Paragraph(str(r.get("Work Details", "-")), tbl_text),
                     Paragraph(str(r.get("Payment Mode", "-")), tbl_text),
@@ -1167,7 +1218,7 @@ elif menu == "📄 Reports & PDF":
             ]]
             for _, r in df_exp.iterrows():
                 e_rows.append([
-                    Paragraph(str(r.get("Date", "-")), tbl_text),
+                    Paragraph(format_to_ddmmyyyy(r.get("Date", "-")), tbl_text),
                     Paragraph(str(r.get("Expense Name", "-")), tbl_text),
                     Paragraph(str(r.get("Notes", "-")), tbl_text),
                     Paragraph(f"<b>{float(pd.to_numeric(r.get('Amount', 0), errors='coerce')):,.2f}</b>", tbl_text)
@@ -1200,14 +1251,14 @@ elif menu == "📄 Reports & PDF":
                 ]]
                 for _, r in active_dues.iterrows():
                     d_rows.append([
-                        Paragraph(str(r.get("Date", "-")), tbl_text),
+                        Paragraph(format_to_ddmmyyyy(r.get("Date", "-")), tbl_text),
                         Paragraph(str(r.get("Customer Name", "-")), tbl_text),
                         Paragraph(str(r.get("Mobile Number", "-")), tbl_text),
                         Paragraph(str(r.get("Service Details", "Service")), tbl_text),
                         Paragraph(f"{float(pd.to_numeric(r.get('Total Amount', 0), errors='coerce')):,.2f}", tbl_text),
                         Paragraph(f"{float(pd.to_numeric(r.get('Paid Amount', 0), errors='coerce')):,.2f}", tbl_text),
                         Paragraph(f"<b>{float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce')):,.2f}</b>", tbl_text),
-                        Paragraph(str(r.get("Due Date", "-")), tbl_text)
+                        Paragraph(format_to_ddmmyyyy(r.get("Due Date", "-")), tbl_text)
                     ])
                 t3 = Table(d_rows, colWidths=[70, 160, 95, 175, 75, 75, 75, 65])
                 t3.setStyle(TableStyle([
@@ -1224,11 +1275,11 @@ elif menu == "📄 Reports & PDF":
         buf.seek(0)
         return buf
 
-    stat_pdf = generate_statement_pdf_landscape(d_from, d_to, f_i, f_e, f_b, tot_op, t_i, t_e, closing_bal)
+    stat_pdf = generate_statement_pdf_landscape(d_from_str, d_to_str, f_i, f_e, f_b, tot_op, t_i, t_e, closing_bal)
     st.download_button(
         label="📥 Download Complete Financial Statement (Landscape PDF)",
         data=stat_pdf,
-        file_name=f"Landscape_Financial_Statement_{d_from}_to_{d_to}.pdf",
+        file_name=f"Landscape_Financial_Statement_{d_from_str.replace('/', '-')}_to_{d_to_str.replace('/', '-')}.pdf",
         mime="application/pdf",
         type="primary",
         use_container_width=True
@@ -1259,7 +1310,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 7. CUSTOMERS DIRECTORY (SAFE LOOKUP & EDIT) -----------------
+# ----------------- 7. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast (Cloud)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -1284,7 +1335,7 @@ elif menu == "👥 Customers Directory":
                         st.warning(f"⚠️ A customer with mobile {clean_phone} already exists in records!")
                     else:
                         GSheetsManager.append_row("Customers", {
-                            "Created Date": datetime.now().strftime("%Y-%m-%d"),
+                            "Created Date": datetime.now().strftime("%d/%m/%Y"),
                             "Customer Name": cn.strip(),
                             "Mobile Number": clean_phone,
                             "City Address": c_addr,
@@ -1424,7 +1475,7 @@ elif menu == "💾 Cloud Excel Backup":
     st.download_button(
         label="📥 Download Full Offline Excel Backup (.xlsx)",
         data=buf,
-        file_name=f"Rojmed_Cloud_Backup_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        file_name=f"Rojmed_Cloud_Backup_{datetime.now().strftime('%d_%m_%Y_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         use_container_width=True
