@@ -95,7 +95,7 @@ DEFAULT_SCHEMAS = {
     "Customers": ["ID", "Created Date", "Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"],
     "Invoices_Archive": ["Invoice No", "Date", "Customer Name", "Mobile Number", "Service 1", "Amount 1", "Service 2", "Amount 2", "Total Amount", "Paid Amount", "Pending Amount", "Payment Mode", "Remarks"],
     "Income": ["ID", "Date", "Customer Person", "Work Details", "Amount", "Payment Mode", "Notes"],
-    "Expense": ["ID", "Date", "Expense Name", "Amount", "Notes"],
+    "Expense": ["ID", "Date", "Expense Name", "Amount", "Payment Mode", "Notes"],
     "Udhar_Baki": ["ID", "Date", "Customer Name", "Mobile Number", "Service Details", "Total Amount", "Paid Amount", "Pending Amount", "Due Date", "Status"],
     "Task_Reminder": ["ID", "Date", "Time", "Person Name", "Mobile", "Task Details", "Status"],
     "Settings": ["Setting Key", "Setting Value", "Updated Date"]
@@ -128,8 +128,7 @@ class GSheetsManager:
     def get_df(sheet_name):
         if conn is not None:
             try:
-                # ttl="60s" prevents hitting the 60 req/min quota limit
-                df = conn.read(worksheet=sheet_name, ttl="60s")
+                df = conn.read(worksheet=sheet_name, ttl="30s")
                 if df is not None and not df.empty:
                     df = df.dropna(how="all")
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
@@ -141,6 +140,9 @@ class GSheetsManager:
                     for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
                         if d_col in df.columns:
                             df[d_col] = df[d_col].apply(format_to_ddmmyyyy)
+                    
+                    if sheet_name == "Expense" and "Payment Mode" not in df.columns:
+                        df["Payment Mode"] = "Cash"
                     
                     if sheet_name == "Customers":
                         if "Primary Service" not in df.columns:
@@ -399,7 +401,7 @@ if "current_page" not in st.session_state:
 
 st.sidebar.markdown("<h4 style='color:#1E3A8A;'>📌 Navigation Menu</h4>", unsafe_allow_html=True)
 menu_items = [
-    ("📊 Dashboard", "Business metrics & live summary"),
+    ("📊 Dashboard", "Business metrics & live cash/bank summary"),
     ("⏰ Task Reminders", "Calendar & Clock Reminders"),
     ("🧾 Generate Bill / Voucher", "Create, Edit, Print Invoices & Vouchers"),
     ("📋 Due Collections", "Customer Pending Dues & Edit Records"),
@@ -523,10 +525,11 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD -----------------
+# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION) -----------------
 if menu == "📊 Dashboard":
-    st.subheader("📊 Business Overview (Google Sheets Live)")
+    st.subheader("📊 Business Overview & Live Balances (Google Sheets)")
     
+    # Active Reminders
     df_rem_all = GSheetsManager.get_df("Task_Reminder")
     if not df_rem_all.empty and "Status" in df_rem_all.columns:
         pending_tasks = df_rem_all[df_rem_all["Status"] == "Pending"]
@@ -560,66 +563,105 @@ if menu == "📊 Dashboard":
     df_cust = GSheetsManager.get_df("Customers")
     today_str = datetime.now().strftime("%d/%m/%Y")
     
-    today_inc = pd.to_numeric(df_inc[df_inc["Date"] == today_str]["Amount"], errors='coerce').sum() if not df_inc.empty and "Date" in df_inc.columns else 0.0
-    total_inc = pd.to_numeric(df_inc["Amount"], errors='coerce').sum() if not df_inc.empty and "Amount" in df_inc.columns else 0.0
-    today_exp = pd.to_numeric(df_exp[df_exp["Date"] == today_str]["Amount"], errors='coerce').sum() if not df_exp.empty and "Date" in df_exp.columns else 0.0
-    total_exp = pd.to_numeric(df_exp["Amount"], errors='coerce').sum() if not df_exp.empty and "Amount" in df_exp.columns else 0.0
+    # Mode-wise Income Separation
+    cash_inc_total = 0.0
+    bank_inc_total = 0.0
+    today_inc_total = 0.0
+    
+    if not df_inc.empty and "Amount" in df_inc.columns:
+        df_inc["Amount_Num"] = pd.to_numeric(df_inc["Amount"], errors='coerce').fillna(0.0)
+        mode_col = df_inc["Payment Mode"].astype(str).str.lower() if "Payment Mode" in df_inc.columns else pd.Series(["cash"]*len(df_inc))
+        
+        cash_inc_total = df_inc[mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+        bank_inc_total = df_inc[~mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+        
+        if "Date" in df_inc.columns:
+            today_inc_total = df_inc[df_inc["Date"] == today_str]["Amount_Num"].sum()
+
+    # Mode-wise Expense Separation
+    cash_exp_total = 0.0
+    bank_exp_total = 0.0
+    today_exp_total = 0.0
+    
+    if not df_exp.empty and "Amount" in df_exp.columns:
+        df_exp["Amount_Num"] = pd.to_numeric(df_exp["Amount"], errors='coerce').fillna(0.0)
+        
+        if "Payment Mode" in df_exp.columns:
+            exp_mode_col = df_exp["Payment Mode"].astype(str).str.lower()
+        elif "Notes" in df_exp.columns:
+            exp_mode_col = df_exp["Notes"].astype(str).str.lower()
+        else:
+            exp_mode_col = pd.Series(["cash"]*len(df_exp))
+            
+        cash_exp_total = df_exp[exp_mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+        bank_exp_total = df_exp[~exp_mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+        
+        if "Date" in df_exp.columns:
+            today_exp_total = df_exp[df_exp["Date"] == today_str]["Amount_Num"].sum()
+
+    total_inc = cash_inc_total + bank_inc_total
+    total_exp = cash_exp_total + bank_exp_total
     total_baki = pd.to_numeric(df_baki["Pending Amount"], errors='coerce').sum() if not df_baki.empty and "Pending Amount" in df_baki.columns else 0.0
     
     cash_op, bank_op = GSheetsManager.get_opening_balance()
-    tot_op = cash_op + bank_op
-    closing_net_balance = tot_op + total_inc - total_exp
+    
+    # Exact Independent Live Balances
+    current_cash_in_hand = cash_op + cash_inc_total - cash_exp_total
+    current_bank_balance = bank_op + bank_inc_total - bank_exp_total
+    closing_net_balance = current_cash_in_hand + current_bank_balance
     total_cust = len(df_cust) if not df_cust.empty else 0
 
-    k_row1_c1, k_row1_c2, k_row1_c3 = st.columns(3)
-    with k_row1_c1:
-        st.markdown(f"""
-            <div class="kpi-card" style="border-left: 5px solid #2563EB;">
-                <div class="kpi-label">🏦 Total Opening Balance</div>
-                <div class="kpi-value">₹ {tot_op:,.2f}</div>
-                <div class="kpi-sub">Cash: ₹ {cash_op:,.2f} | Bank: ₹ {bank_op:,.2f}</div>
-            </div>
-        """, unsafe_allow_html=True)
-    with k_row1_c2:
+    st.markdown("#### 💼 Real-Time Available Funds")
+    r1_c1, r1_c2, r1_c3 = st.columns(3)
+    with r1_c1:
         st.markdown(f"""
             <div class="kpi-card" style="border-left: 5px solid #16A34A;">
-                <div class="kpi-label">💰 Total Revenue (Income)</div>
-                <div class="kpi-value" style="color: #15803D;">₹ {total_inc:,.2f}</div>
-                <div class="kpi-sub">Today's Inflow: ₹ {today_inc:,.2f}</div>
+                <div class="kpi-label">💵 Live Cash in Hand (ગલ્લો)</div>
+                <div class="kpi-value" style="color: #15803D;">₹ {current_cash_in_hand:,.2f}</div>
+                <div class="kpi-sub">Opening: ₹ {cash_op:,.0f} | In: +₹ {cash_inc_total:,.0f} | Out: -₹ {cash_exp_total:,.0f}</div>
             </div>
         """, unsafe_allow_html=True)
-    with k_row1_c3:
+    with r1_c2:
         st.markdown(f"""
-            <div class="kpi-card" style="border-left: 5px solid #DC2626;">
-                <div class="kpi-label">💸 Total Expenses</div>
-                <div class="kpi-value" style="color: #DC2626;">₹ {total_exp:,.2f}</div>
-                <div class="kpi-sub">Today's Outflow: ₹ {today_exp:,.2f}</div>
+            <div class="kpi-card" style="border-left: 5px solid #2563EB;">
+                <div class="kpi-label">🏦 Live Bank / UPI Balance</div>
+                <div class="kpi-value" style="color: #1D4ED8;">₹ {current_bank_balance:,.2f}</div>
+                <div class="kpi-sub">Opening: ₹ {bank_op:,.0f} | In: +₹ {bank_inc_total:,.0f} | Out: -₹ {bank_exp_total:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with r1_c3:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #0284C7;">
+                <div class="kpi-label">💼 Total Net Balance (કુલ સિલક)</div>
+                <div class="kpi-value" style="color: #0369A1;">₹ {closing_net_balance:,.2f}</div>
+                <div class="kpi-sub">Cash + Bank Combined Capital</div>
             </div>
         """, unsafe_allow_html=True)
 
-    k_row2_c1, k_row2_c2, k_row2_c3 = st.columns(3)
-    with k_row2_c1:
+    st.markdown("#### 📈 Revenue & Activity Summary")
+    r2_c1, r2_c2, r2_c3 = st.columns(3)
+    with r2_c1:
         st.markdown(f"""
-            <div class="kpi-card" style="border-left: 5px solid #0284C7;">
-                <div class="kpi-label">💼 Net Closing Balance</div>
-                <div class="kpi-value" style="color: #0369A1;">₹ {closing_net_balance:,.2f}</div>
-                <div class="kpi-sub">Available Business Capital</div>
+            <div class="kpi-card" style="border-left: 5px solid #059669;">
+                <div class="kpi-label">💰 Total Revenue (Income)</div>
+                <div class="kpi-value" style="color: #047857;">₹ {total_inc:,.2f}</div>
+                <div class="kpi-sub">Cash: ₹ {cash_inc_total:,.0f} | Online: ₹ {bank_inc_total:,.0f} (Today: ₹ {today_inc_total:,.0f})</div>
             </div>
         """, unsafe_allow_html=True)
-    with k_row2_c2:
+    with r2_c2:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left: 5px solid #DC2626;">
+                <div class="kpi-label">💸 Total Expenses (ખર્ચ)</div>
+                <div class="kpi-value" style="color: #DC2626;">₹ {total_exp:,.2f}</div>
+                <div class="kpi-sub">Cash: ₹ {cash_exp_total:,.0f} | Online: ₹ {bank_exp_total:,.0f} (Today: ₹ {today_exp_total:,.0f})</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with r2_c3:
         st.markdown(f"""
             <div class="kpi-card" style="border-left: 5px solid #D97706;">
                 <div class="kpi-label">📋 Total Pending Dues</div>
                 <div class="kpi-value" style="color: #B45309;">₹ {total_baki:,.2f}</div>
-                <div class="kpi-sub">Uncollected Client Receivables</div>
-            </div>
-        """, unsafe_allow_html=True)
-    with k_row2_c3:
-        st.markdown(f"""
-            <div class="kpi-card" style="border-left: 5px solid #7C3AED;">
-                <div class="kpi-label">👥 Registered Clients</div>
-                <div class="kpi-value" style="color: #6D28D9;">{total_cust}</div>
-                <div class="kpi-sub">Google Sheets Cloud Database</div>
+                <div class="kpi-sub">Clients Count: {total_cust} registered</div>
             </div>
         """, unsafe_allow_html=True)
 
@@ -820,7 +862,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 col_dwn, col_wa = st.columns(2)
                 col_dwn.download_button("📥 Download PDF Invoice", data=pdf_data, file_name=f"Invoice_{cust_name}_{bill_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
                 
-                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n📅 *Date:* {bill_date}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f}\n"
+                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n📅 *Date:* {bill_date}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f} ({pay_mode})\n"
                 if baki_amt > 0:
                     wa_msg += f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n"
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
@@ -921,13 +963,13 @@ elif menu == "🧾 Generate Bill / Voucher":
         v_date = c2.date_input("Date", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
         p_name = c1.text_input("Paid To *")
         p_amt = c2.number_input("Amount (₹) *", min_value=0.0, step=50.0)
-        p_mode = c1.selectbox("Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
+        p_mode = c1.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"])
         p_desc = c2.text_input("Expense Purpose *")
         if st.button("💾 Save Expense to Cloud", type="primary", use_container_width=True):
             if p_name and p_amt > 0:
                 GSheetsManager.append_row("Expense", {
                     "Date": v_date, "Expense Name": f"{p_name} ({p_desc})",
-                    "Amount": p_amt, "Notes": f"VOU #{v_no} | {p_mode}"
+                    "Amount": p_amt, "Payment Mode": p_mode, "Notes": f"VOU #{v_no} | {p_mode}"
                 })
                 st.success("Expense Recorded in Google Sheets!")
 
@@ -938,7 +980,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         if not df_exp.empty and "ID" in df_exp.columns:
             exp_clean = df_exp[df_exp["ID"].notna()].copy()
             exp_ids = exp_clean["ID"].tolist()
-            exp_labels = [f"ID #{r['ID']} - {str(r.get('Expense Name', ''))} ({format_to_ddmmyyyy(r.get('Date', ''))}) | ₹{r.get('Amount', 0)}" for _, r in exp_clean.iterrows()]
+            exp_labels = [f"ID #{r['ID']} - {str(r.get('Expense Name', ''))} ({format_to_ddmmyyyy(r.get('Date', ''))}) | ₹{r.get('Amount', 0)} [{r.get('Payment Mode', 'Cash')}]" for _, r in exp_clean.iterrows()]
             
             chosen_e_idx = st.selectbox("Select Voucher / Expense to Modify:", range(len(exp_labels)), format_func=lambda i: exp_labels[i], key="edit_exp_select_idx")
             sel_exp_id = exp_ids[chosen_e_idx]
@@ -952,7 +994,11 @@ elif menu == "🧾 Generate Bill / Voucher":
                 
                 up_ed3, up_ed4 = st.columns(2)
                 up_e_amt = up_ed3.number_input("Amount (₹)", value=float(pd.to_numeric(exp_row.get("Amount", 0.0), errors='coerce') or 0.0), step=50.0, key=f"e_am_{sel_exp_id}")
-                up_e_notes = up_ed4.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
+                curr_exp_mode = str(exp_row.get("Payment Mode", "Cash"))
+                exp_mode_idx = ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"].index(curr_exp_mode) if curr_exp_mode in ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"] else 0
+                up_e_mode = up_ed4.selectbox("Payment Mode", ["Cash", "UPI / GPay", "Bank Transfer", "Cheque"], index=exp_mode_idx, key=f"e_mode_{sel_exp_id}")
+                
+                up_e_notes = st.text_input("Notes", str(exp_row.get("Notes", "")) if pd.notna(exp_row.get("Notes")) else "", key=f"e_nt_{sel_exp_id}")
                 
                 st.markdown("🔒 **Security Authorization:**")
                 exp_auth_pin = st.text_input("Enter Security PIN to Authorize:", type="password", key=f"exp_pin_{sel_exp_id}")
@@ -962,7 +1008,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     if exp_auth_pin == GSheetsManager.get_pin():
                         GSheetsManager.update_row("Expense", sel_exp_id, {
                             "Date": str(up_e_date), "Expense Name": str(up_e_name),
-                            "Amount": float(up_e_amt), "Notes": str(up_e_notes)
+                            "Amount": float(up_e_amt), "Payment Mode": str(up_e_mode), "Notes": str(up_e_notes)
                         })
                         st.success(f"✅ Voucher #{sel_exp_id} updated in Google Sheets!")
                         st.rerun()
@@ -1218,6 +1264,7 @@ elif menu == "📄 Reports & PDF":
             e_rows = [[
                 Paragraph("Date", tbl_hdr), 
                 Paragraph("Expense Particulars / Description", tbl_hdr), 
+                Paragraph("Mode", tbl_hdr),
                 Paragraph("Notes / Remarks", tbl_hdr), 
                 Paragraph("Amount (Rs.)", tbl_hdr)
             ]]
@@ -1225,10 +1272,11 @@ elif menu == "📄 Reports & PDF":
                 e_rows.append([
                     Paragraph(format_to_ddmmyyyy(r.get("Date", "-")), tbl_text),
                     Paragraph(str(r.get("Expense Name", "-")), tbl_text),
+                    Paragraph(str(r.get("Payment Mode", "Cash")), tbl_text),
                     Paragraph(str(r.get("Notes", "-")), tbl_text),
                     Paragraph(f"<b>{float(pd.to_numeric(r.get('Amount', 0), errors='coerce')):,.2f}</b>", tbl_text)
                 ])
-            t2 = Table(e_rows, colWidths=[80, 380, 230, 100])
+            t2 = Table(e_rows, colWidths=[80, 300, 80, 230, 100])
             t2.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#DC2626")),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
