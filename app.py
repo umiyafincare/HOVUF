@@ -128,7 +128,8 @@ class GSheetsManager:
     def get_df(sheet_name):
         if conn is not None:
             try:
-                df = conn.read(worksheet=sheet_name, ttl=0)
+                # ttl="60s" prevents hitting the 60 req/min quota limit
+                df = conn.read(worksheet=sheet_name, ttl="60s")
                 if df is not None and not df.empty:
                     df = df.dropna(how="all")
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
@@ -137,7 +138,6 @@ class GSheetsManager:
                         if c != "ID" and not ("Amount" in c or "Balance" in c):
                             df[c] = df[c].astype(object)
                     
-                    # Convert any date column to DD/MM/YYYY automatically
                     for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
                         if d_col in df.columns:
                             df[d_col] = df[d_col].apply(format_to_ddmmyyyy)
@@ -164,6 +164,7 @@ class GSheetsManager:
         if conn is not None:
             try:
                 conn.update(worksheet=sheet_name, data=df)
+                st.cache_data.clear()
             except Exception as e:
                 st.error(f"Google Sheets Sync Error: {e}")
 
@@ -174,7 +175,6 @@ class GSheetsManager:
             new_id = 1 if df.empty or "ID" not in df.columns else (int(pd.to_numeric(df["ID"], errors='coerce').max()) + 1 if len(df["ID"].dropna()) > 0 else 1)
             row_dict["ID"] = new_id
         
-        # Ensure all dates saved in DD/MM/YYYY
         for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
             if d_col in row_dict:
                 row_dict[d_col] = format_to_ddmmyyyy(row_dict[d_col])
@@ -421,6 +421,11 @@ for label, desc in menu_items:
 
 menu = st.session_state.current_page
 st.sidebar.markdown("---")
+
+if st.sidebar.button("🔄 Refresh Cloud Data", use_container_width=True):
+    st.cache_data.clear()
+    st.success("Data Refreshed!")
+    st.rerun()
 
 if st.sidebar.button("🔒 Logout System", use_container_width=True):
     st.session_state.logged_in = False
