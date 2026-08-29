@@ -18,19 +18,13 @@ COMPANY_MOBILE = "7698564672 / 9714776364"
 COMPANY_TAGLINE = "Visa Consultancy | Insurance & Land Advisor | Property Solution | Daily Accounting"
 
 # Official Payment Details
-UPI_ID = "Q56611201@ybl"
-UPI_PAYEE_NAME = "Hari Om Insurance And Land"
+UPI_ID = "7698564672@upi"
 
 # Image File Names
 LOGO_VISA = "HARI OM.jpg"
 LOGO_FINCARE = "UMIYA FIN.jpg"
 LOGO_INSURANCE = "HARI OM IL.jpg"
 LOGO_PROPERTY = "SHREE UNIYA.jpg"
-QR_CODE_IMAGE = "QR.jpeg"
-
-# Public Direct Image Link for WhatsApp Preview
-# આ લિંકથી ગ્રાહકના WhatsApp મેસેજમાં સીધો QR Code નો ફોટો પ્રિવ્યુ થઈ જશે
-QR_IMAGE_PUBLIC_URL = "https://raw.githubusercontent.com/dhavalpatel/hovuf/main/QR.jpeg"
 
 DEFAULT_PIN = "1234"
 
@@ -554,13 +548,12 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     elems.append(t_items)
     elems.append(Spacer(1, 12))
     
-    # Official QR Code In PDF Bill (If balance due)
-    if os.path.exists(QR_CODE_IMAGE) and baki_amt > 0:
-        qr_flow = PDFImage(QR_CODE_IMAGE, width=70, height=95)
-        qr_info = Paragraph(f"<b>Scan & Pay with Any UPI App:</b><br/>UPI ID: <b>{UPI_ID}</b><br/>Payee: {UPI_PAYEE_NAME}<br/>Pending Due: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
-        t_qr = Table([[qr_flow, qr_info]], colWidths=[80, 470])
-        t_qr.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F1F5F9")), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E1"))]))
-        elems.append(t_qr)
+    # UPI ID Details In PDF Bill (If balance due)
+    if baki_amt > 0:
+        upi_info = Paragraph(f"<b>Online Payment Details:</b><br/>UPI ID: <b>{UPI_ID}</b><br/>Pending Balance: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
+        t_upi = Table([[upi_info]], colWidths=[550])
+        t_upi.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F1F5F9")), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E1")), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
+        elems.append(t_upi)
         elems.append(Spacer(1, 10))
     
     foot_data = [[f"<b>Note:</b> {remarks}", f"For, <b>{COMPANY_NAME}</b>"], ["", "\n\n___________________________\nAuthorized Signature"]]
@@ -571,7 +564,7 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION + QR) -----------------
+# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION) -----------------
 if menu == "📊 Dashboard":
     st.subheader("📊 Business Overview & Live Balances (Google Sheets)")
     
@@ -712,17 +705,7 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
 
     st.divider()
-    
-    # Pending Collections with QR Image Preview Feature
-    col_due_hdr, col_qr_show = st.columns([3.5, 1.5])
-    with col_due_hdr:
-        st.subheader("📋 Pending Collections & WhatsApp QR Reminder")
-    with col_qr_show:
-        with st.popover("📱 View Official Shop QR Code"):
-            if os.path.exists(QR_CODE_IMAGE):
-                st.image(QR_CODE_IMAGE, caption=f"UPI ID: {UPI_ID}", use_container_width=True)
-            else:
-                st.info(f"UPI ID: {UPI_ID}\nPayee: {UPI_PAYEE_NAME}")
+    st.subheader("📋 Pending Collections & WhatsApp Reminders")
 
     if not df_baki.empty and "Pending Amount" in df_baki.columns:
         pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
@@ -740,25 +723,22 @@ if menu == "📊 Dashboard":
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
                 
-                # Professional WhatsApp Message with Direct QR Image Preview
+                # Professional WhatsApp Message with UPI ID
                 msg = (
                     f"🙏 *નમસ્તે {r.get('Customer Name')}*,\n\n"
                     f"🏢 *{COMPANY_NAME}*\n"
                     f"📌 *વિગત:* {serv_name}\n"
                     f"💰 *બાકી રકમ (Pending Due):* ₹ {due_val:,.2f}\n"
                     f"📅 *તારીખ:* {format_to_ddmmyyyy(r.get('Due Date'))}\n\n"
-                    f"💳 *ઓનલાઇન પેમેન્ટ કરવા માટે QR કોડ નો ફોટો નીચે આપેલો છે:*\n"
-                    f"👉 *UPI ID:* `{UPI_ID}`\n"
-                    f"👉 *નામ:* {UPI_PAYEE_NAME}\n\n"
-                    f"📷 *QR Code નો ફોટો જોવા અને સ્કેન કરવા અહીં ક્લિક કરો:*\n"
-                    f"{QR_IMAGE_PUBLIC_URL}\n\n"
+                    f"💳 *ઓનલાઇન પેમેન્ટ કરવા માટે UPI ID:*\n"
+                    f"👉 `{UPI_ID}`\n\n"
                     f"📞 *સંપર્ક:* {COMPANY_MOBILE}\n"
                     f"આભાર!"
                 )
                 
                 if clean_phone and len(clean_phone) >= 10:
                     wa_url = f"https://wa.me/91{clean_phone}?text={urllib.parse.quote(msg)}"
-                    b6.markdown(f"[📲 Send WhatsApp + QR Photo]({wa_url})", unsafe_allow_html=True)
+                    b6.markdown(f"[📲 Send WhatsApp Reminder]({wa_url})", unsafe_allow_html=True)
                 else:
                     b6.write("⚠️ Invalid Number")
         else:
@@ -960,8 +940,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 if baki_amt > 0:
                     wa_msg += (
                         f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n\n"
-                        f"💳 *Pay Online via UPI:* `{UPI_ID}`\n"
-                        f"📷 *Scan QR Code Photo:* {QR_IMAGE_PUBLIC_URL}\n\n"
+                        f"💳 *Pay Online via UPI:* `{UPI_ID}`\n\n"
                     )
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
                 
@@ -1586,7 +1565,7 @@ elif menu == "👥 Customers Directory":
             display_cols = [c for c in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"] if c in target_df.columns]
             st.dataframe(target_df[display_cols], use_container_width=True)
             
-            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nUPI Payment QR: {QR_IMAGE_PUBLIC_URL}")
+            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nUPI Payment ID: {UPI_ID}")
             
             st.markdown("##### 📲 Click to Send WhatsApp Directly:")
             for _, prow in target_df.head(25).iterrows():
