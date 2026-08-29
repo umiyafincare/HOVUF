@@ -19,6 +19,7 @@ COMPANY_TAGLINE = "Visa Consultancy | Insurance & Land Advisor | Property Soluti
 
 # Official Payment Details
 UPI_ID = "7698564672@upi"
+PAYMENT_MOBILE = "7698564672"
 
 # Image File Names
 LOGO_VISA = "HARI OM.jpg"
@@ -548,9 +549,9 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     elems.append(t_items)
     elems.append(Spacer(1, 12))
     
-    # UPI ID Details In PDF Bill (If balance due)
+    # Online Payment Box in PDF Bill (If balance due)
     if baki_amt > 0:
-        upi_info = Paragraph(f"<b>Online Payment Details:</b><br/>UPI ID: <b>{UPI_ID}</b><br/>Pending Balance: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
+        upi_info = Paragraph(f"<b>Online Payment Details (GPay / PhonePe / Paytm / BHIM):</b><br/>Mobile No: <b>{PAYMENT_MOBILE}</b> | UPI ID: <b>{UPI_ID}</b><br/>Pending Balance: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
         t_upi = Table([[upi_info]], colWidths=[550])
         t_upi.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F1F5F9")), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E1")), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
         elems.append(t_upi)
@@ -723,15 +724,16 @@ if menu == "📊 Dashboard":
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
                 
-                # Professional WhatsApp Message with UPI ID
+                # Professional WhatsApp Message with Mobile No & UPI ID for Payment
                 msg = (
                     f"🙏 *નમસ્તે {r.get('Customer Name')}*,\n\n"
                     f"🏢 *{COMPANY_NAME}*\n"
                     f"📌 *વિગત:* {serv_name}\n"
                     f"💰 *બાકી રકમ (Pending Due):* ₹ {due_val:,.2f}\n"
                     f"📅 *તારીખ:* {format_to_ddmmyyyy(r.get('Due Date'))}\n\n"
-                    f"💳 *ઓનલાઇન પેમેન્ટ કરવા માટે UPI ID:*\n"
-                    f"👉 `{UPI_ID}`\n\n"
+                    f"💳 *GPay / PhonePe / BHIM UPI પેમેન્ટ માટે:*\n"
+                    f"👉 *મોબાઈલ નંબર:* `{PAYMENT_MOBILE}`\n"
+                    f"👉 *UPI ID:* `{UPI_ID}`\n\n"
                     f"📞 *સંપર્ક:* {COMPANY_MOBILE}\n"
                     f"આભાર!"
                 )
@@ -940,7 +942,9 @@ elif menu == "🧾 Generate Bill / Voucher":
                 if baki_amt > 0:
                     wa_msg += (
                         f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n\n"
-                        f"💳 *Pay Online via UPI:* `{UPI_ID}`\n\n"
+                        f"💳 *GPay / PhonePe / BHIM UPI પેમેન્ટ માટે:*\n"
+                        f"👉 *મોબાઈલ નંબર:* `{PAYMENT_MOBILE}`\n"
+                        f"👉 *UPI ID:* `{UPI_ID}`\n\n"
                     )
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
                 
@@ -1565,7 +1569,7 @@ elif menu == "👥 Customers Directory":
             display_cols = [c for c in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"] if c in target_df.columns]
             st.dataframe(target_df[display_cols], use_container_width=True)
             
-            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nUPI Payment ID: {UPI_ID}")
+            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nPayment Mobile No: {PAYMENT_MOBILE} | UPI ID: {UPI_ID}")
             
             st.markdown("##### 📲 Click to Send WhatsApp Directly:")
             for _, prow in target_df.head(25).iterrows():
