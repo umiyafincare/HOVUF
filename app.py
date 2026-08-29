@@ -2,6 +2,7 @@ import os
 import urllib.parse
 from datetime import datetime, time
 import io
+import re
 import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
@@ -16,10 +17,16 @@ COMPANY_ADDRESS = "F-46 VATSALY STATUS, NR. DHAVAL PLAZA, KADI - 384440"
 COMPANY_MOBILE = "7698564672 / 9714776364"
 COMPANY_TAGLINE = "Visa Consultancy | Insurance & Land Advisor | Property Solution | Daily Accounting"
 
+# Official Payment Details
+UPI_ID = "Q56611201@ybl"
+UPI_PAYEE_NAME = "Hari Om Insurance And Land"
+
+# Image File Names
 LOGO_VISA = "HARI OM.jpg"
 LOGO_FINCARE = "UMIYA FIN.jpg"
 LOGO_INSURANCE = "HARI OM IL.jpg"
 LOGO_PROPERTY = "SHREE UNIYA.jpg"
+QR_CODE_IMAGE = "QR.jpeg"
 
 DEFAULT_PIN = "1234"
 
@@ -101,6 +108,19 @@ DEFAULT_SCHEMAS = {
     "Settings": ["Setting Key", "Setting Value", "Updated Date"]
 }
 
+def clean_phone_number(val):
+    """Removes .0, scientific notation, and non-digits from phone number"""
+    if pd.isna(val) or val is None:
+        return ""
+    val_str = str(val).strip()
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
+    # Extract only digits
+    digits = re.sub(r'\D', '', val_str)
+    if len(digits) > 10 and digits.startswith("91"):
+        digits = digits[2:]
+    return digits
+
 def format_to_ddmmyyyy(val):
     if pd.isna(val) or val is None or str(val).strip() == "" or str(val).strip() == "None":
         return ""
@@ -136,6 +156,12 @@ class GSheetsManager:
                     for c in df.columns:
                         if c != "ID" and not ("Amount" in c or "Balance" in c):
                             df[c] = df[c].astype(object)
+                    
+                    # Clean Phone Number columns
+                    if "Mobile Number" in df.columns:
+                        df["Mobile Number"] = df["Mobile Number"].apply(clean_phone_number)
+                    if "Mobile" in df.columns:
+                        df["Mobile"] = df["Mobile"].apply(clean_phone_number)
                     
                     for d_col in ["Date", "Created Date", "Due Date", "Updated Date"]:
                         if d_col in df.columns:
@@ -181,6 +207,11 @@ class GSheetsManager:
             if d_col in row_dict:
                 row_dict[d_col] = format_to_ddmmyyyy(row_dict[d_col])
                 
+        if "Mobile Number" in row_dict:
+            row_dict["Mobile Number"] = clean_phone_number(row_dict["Mobile Number"])
+        if "Mobile" in row_dict:
+            row_dict["Mobile"] = clean_phone_number(row_dict["Mobile"])
+            
         clean_row = {k.replace('_', ' ').strip(): v for k, v in row_dict.items()}
         new_row_df = pd.DataFrame([clean_row])
         df = pd.concat([df, new_row_df], ignore_index=True)
@@ -199,6 +230,8 @@ class GSheetsManager:
                     clean_k = k.replace('_', ' ').strip()
                     if clean_k in ["Date", "Created Date", "Due Date", "Updated Date"]:
                         v = format_to_ddmmyyyy(v)
+                    if clean_k in ["Mobile Number", "Mobile"]:
+                        v = clean_phone_number(v)
                     if clean_k not in df.columns:
                         df[clean_k] = None
                     if df[clean_k].dtype != object:
@@ -225,6 +258,8 @@ class GSheetsManager:
                     clean_k = k.replace('_', ' ').strip()
                     if clean_k == "Date":
                         v = format_to_ddmmyyyy(v)
+                    if clean_k == "Mobile Number":
+                        v = clean_phone_number(v)
                     if clean_k not in df.columns:
                         df[clean_k] = None
                     if df[clean_k].dtype != object:
@@ -241,7 +276,7 @@ class GSheetsManager:
 
     @staticmethod
     def sync_customer(name, phone, service, remarks=""):
-        clean_p = str(phone).strip()
+        clean_p = clean_phone_number(phone)
         if not clean_p or not name:
             return
         df_c = GSheetsManager.get_df("Customers")
@@ -443,7 +478,7 @@ SERVICE_OPTIONS = [
 def search_customer_profile(search_text):
     if not search_text:
         return None, 0.0, []
-    clean_q = str(search_text).strip()
+    clean_q = clean_phone_number(search_text) if any(c.isdigit() for c in str(search_text)) else str(search_text).strip().lower()
     df_c = GSheetsManager.get_df("Customers")
     df_b = GSheetsManager.get_df("Udhar_Baki")
     
@@ -453,7 +488,7 @@ def search_customer_profile(search_text):
         if not m_phone.empty:
             matched_cust = m_phone.iloc[0]
         elif "Customer Name" in df_c.columns:
-            m_name = df_c[df_c["Customer Name"].astype(str).str.lower() == clean_q.lower()]
+            m_name = df_c[df_c["Customer Name"].astype(str).str.lower() == clean_q]
             if not m_name.empty:
                 matched_cust = m_name.iloc[0]
                 
@@ -462,7 +497,7 @@ def search_customer_profile(search_text):
     if not df_b.empty and "Pending Amount" in df_b.columns:
         cond = (df_b["Mobile Number"].astype(str).str.strip() == clean_q) if "Mobile Number" in df_b.columns else pd.Series([False]*len(df_b))
         if "Customer Name" in df_b.columns:
-            cond = cond | (df_b["Customer Name"].astype(str).str.lower() == clean_q.lower())
+            cond = cond | (df_b["Customer Name"].astype(str).str.lower() == clean_q)
         m_due = df_b[cond]
         active_dues = m_due[pd.to_numeric(m_due["Pending Amount"], errors='coerce') > 0]
         if not active_dues.empty:
@@ -492,10 +527,11 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     elems.append(Paragraph("TAX INVOICE / PAYMENT RECEIPT", c_inv))
     elems.append(Spacer(1, 8))
     
+    clean_p_disp = clean_phone_number(cust_phone)
     status_text = "PAID" if baki_amt <= 0 else f"PARTIAL (Balance: Rs. {baki_amt:,.2f})"
     meta_data = [
         [f"<b>Invoice No:</b> {bill_no}", f"<b>Date:</b> {format_to_ddmmyyyy(bill_date)}"],
-        [f"<b>Name:</b> {cust_name}", f"<b>Mobile:</b> {cust_phone}"],
+        [f"<b>Name:</b> {cust_name}", f"<b>Mobile:</b> {clean_p_disp}"],
         [f"<b>Payment Mode:</b> {pay_mode}", f"<b>Status:</b> {status_text}"]
     ]
     t_meta = Table([[Paragraph(c, styles['Normal']) for c in r] for r in meta_data], colWidths=[275, 275])
@@ -515,7 +551,16 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     t_items = Table([[Paragraph(str(c), styles['Normal']) for c in r] for r in items_data], colWidths=[40, 370, 140])
     t_items.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")), ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'), ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#F0FDF4")), ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5)]))
     elems.append(t_items)
-    elems.append(Spacer(1, 15))
+    elems.append(Spacer(1, 12))
+    
+    # QR Code In PDF Bill (If balance due)
+    if os.path.exists(QR_CODE_IMAGE) and baki_amt > 0:
+        qr_flow = PDFImage(QR_CODE_IMAGE, width=70, height=95)
+        qr_info = Paragraph(f"<b>Scan & Pay with Any UPI App:</b><br/>UPI ID: <b>{UPI_ID}</b><br/>Payee: {UPI_PAYEE_NAME}<br/>Pending Due: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
+        t_qr = Table([[qr_flow, qr_info]], colWidths=[80, 470])
+        t_qr.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F1F5F9")), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E1"))]))
+        elems.append(t_qr)
+        elems.append(Spacer(1, 10))
     
     foot_data = [[f"<b>Note:</b> {remarks}", f"For, <b>{COMPANY_NAME}</b>"], ["", "\n\n___________________________\nAuthorized Signature"]]
     t_foot = Table([[Paragraph(c, styles['Normal']) for c in r] for r in foot_data], colWidths=[310, 240])
@@ -525,7 +570,7 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION) -----------------
+# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION + QR) -----------------
 if menu == "📊 Dashboard":
     st.subheader("📊 Business Overview & Live Balances (Google Sheets)")
     
@@ -545,9 +590,10 @@ if menu == "📊 Dashboard":
                 col_t1.write(f"📅 **{format_to_ddmmyyyy(tr.get('Date'))}**")
                 col_t2.write(f"⏰ {tr.get('Time')}")
                 col_t3.write(f"📌 **{tr.get('Task Details')}** ({tr.get('Person Name', 'Client')})")
-                if pd.notna(tr.get('Mobile')):
+                clean_rem_mob = clean_phone_number(tr.get('Mobile'))
+                if clean_rem_mob and len(clean_rem_mob) >= 10:
                     t_msg = f"Reminder regarding: {tr.get('Task Details')} scheduled on {format_to_ddmmyyyy(tr.get('Date'))} at {tr.get('Time')}."
-                    t_url = f"https://wa.me/91{str(tr.get('Mobile')).strip()}?text={urllib.parse.quote(t_msg)}"
+                    t_url = f"https://wa.me/91{clean_rem_mob}?text={urllib.parse.quote(t_msg)}"
                     col_t4.markdown(f"[📲 WhatsApp]({t_url})")
                 else:
                     col_t4.write("-")
@@ -605,7 +651,6 @@ if menu == "📊 Dashboard":
     
     cash_op, bank_op = GSheetsManager.get_opening_balance()
     
-    # Exact Independent Live Balances
     current_cash_in_hand = cash_op + cash_inc_total - cash_exp_total
     current_bank_balance = bank_op + bank_inc_total - bank_exp_total
     closing_net_balance = current_cash_in_hand + current_bank_balance
@@ -666,22 +711,59 @@ if menu == "📊 Dashboard":
         """, unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("📋 Pending Collections & Itemized WhatsApp Reminders")
+    
+    # Pending Collections with QR & One-Click UPI Payment
+    col_due_hdr, col_qr_show = st.columns([3.5, 1.5])
+    with col_due_hdr:
+        st.subheader("📋 Pending Collections & WhatsApp Payment Link")
+    with col_qr_show:
+        with st.popover("📱 View Official Shop QR Code"):
+            if os.path.exists(QR_CODE_IMAGE):
+                st.image(QR_CODE_IMAGE, caption=f"UPI ID: {UPI_ID}", use_container_width=True)
+            else:
+                st.info(f"UPI ID: {UPI_ID}\nPayee: {UPI_PAYEE_NAME}")
+
     if not df_baki.empty and "Pending Amount" in df_baki.columns:
         pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
         if not pending.empty:
             for _, r in pending.iterrows():
                 b1, b2, b3, b4, b5, b6 = st.columns([2, 2, 2, 2, 2, 2])
                 b1.write(f"**{r.get('Customer Name')}**")
-                b2.write(f"📞 {r.get('Mobile Number')}")
+                
+                # Clean Mobile Number (No .0)
+                clean_phone = clean_phone_number(r.get('Mobile Number'))
+                b2.write(f"📞 {clean_phone}")
+                
                 serv_name = str(r.get('Service Details', 'Service'))
                 b3.write(f"🏷️ *{serv_name}*")
                 due_val = float(pd.to_numeric(r.get('Pending Amount', 0), errors='coerce'))
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
-                msg = f"Hello {r.get('Customer Name')}, payment reminder from {COMPANY_NAME}. An outstanding balance of Rs. {due_val:,.2f} is pending for {serv_name}. Contact: {COMPANY_MOBILE}"
-                wa_url = f"https://wa.me/91{str(r.get('Mobile Number')).strip()}?text={urllib.parse.quote(msg)}"
-                b6.markdown(f"[📲 Send WhatsApp]({wa_url})", unsafe_allow_html=True)
+                
+                # Direct UPI Payment Link (Opens Google Pay / PhonePe / Paytm)
+                upi_pay_link = f"upi://pay?pa={UPI_ID}&pn={urllib.parse.quote(UPI_PAYEE_NAME)}&am={due_val:.2f}&cu=INR"
+                
+                # Professional WhatsApp Message with Direct Payment Link & QR info
+                msg = (
+                    f"🙏 *નમસ્તે {r.get('Customer Name')}*,\n\n"
+                    f"🏢 *{COMPANY_NAME}*\n"
+                    f"📌 *વિગત:* {serv_name}\n"
+                    f"💰 *બાકી રકમ (Pending Due):* ₹ {due_val:,.2f}\n"
+                    f"📅 *તારીખ:* {format_to_ddmmyyyy(r.get('Due Date'))}\n\n"
+                    f"💳 *ઓનલાઇન પેમેન્ટ કરવા માટે નીચેની UPI ID પર ચૂકવણી કરો:*\n"
+                    f"👉 *UPI ID:* `{UPI_ID}`\n"
+                    f"👉 *નામ:* {UPI_PAYEE_NAME}\n\n"
+                    f"📲 *સીધું પેમેન્ટ કરવા માટે અહીં ક્લિક કરો:*\n"
+                    f"{upi_pay_link}\n\n"
+                    f"📞 *સંપર્ક:* {COMPANY_MOBILE}\n"
+                    f"આભાર!"
+                )
+                
+                if clean_phone and len(clean_phone) >= 10:
+                    wa_url = f"https://wa.me/91{clean_phone}?text={urllib.parse.quote(msg)}"
+                    b6.markdown(f"[📲 Send WhatsApp + QR Link]({wa_url})", unsafe_allow_html=True)
+                else:
+                    b6.write("⚠️ Invalid Number")
         else:
             st.success("All customer accounts clear!")
 
@@ -703,7 +785,7 @@ elif menu == "⏰ Task Reminders":
                 if tdesc and pname:
                     GSheetsManager.append_row("Task_Reminder", {
                         "Date": rdate, "Time": rtime, "Person Name": pname,
-                        "Mobile": rphone, "Task Details": tdesc, "Status": "Pending"
+                        "Mobile": clean_phone_number(rphone), "Task Details": tdesc, "Status": "Pending"
                     })
                     st.success("Reminder Saved to Google Sheets!")
                     st.rerun()
@@ -749,7 +831,7 @@ elif menu == "🧾 Generate Bill / Voucher":
         if not df_all_cust.empty:
             serv_col = "Primary Service" if "Primary Service" in df_all_cust.columns else df_all_cust.columns[min(5, len(df_all_cust.columns)-1)]
             cust_quick_list = ["-- Quick Choose Registered Client (Optional) --"] + [
-                f"{r.get('Customer Name', '')} ({r.get('Mobile Number', '')}) - {r.get(serv_col, '')}" 
+                f"{r.get('Customer Name', '')} ({clean_phone_number(r.get('Mobile Number', ''))}) - {r.get(serv_col, '')}" 
                 for _, r in df_all_cust.iterrows()
             ]
             chosen_c = col_s_opt1.selectbox("Search from Directory:", cust_quick_list)
@@ -758,7 +840,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 selected_from_list = df_all_cust.iloc[c_idx]
 
         init_name = str(selected_from_list.get("Customer Name", "")) if selected_from_list is not None else ""
-        init_phone = str(selected_from_list.get("Mobile Number", "")) if selected_from_list is not None else ""
+        init_phone = clean_phone_number(selected_from_list.get("Mobile Number", "")) if selected_from_list is not None else ""
         init_service = str(selected_from_list.get("Primary Service", "VISA")) if selected_from_list is not None else "VISA"
         
         col_c1, col_c2 = st.columns(2)
@@ -771,7 +853,7 @@ elif menu == "🧾 Generate Bill / Voucher":
             
             if matched_profile is not None or live_due > 0:
                 p_name = matched_profile.get('Customer Name') if matched_profile is not None else cust_name
-                p_phone = matched_profile.get('Mobile Number') if matched_profile is not None else cust_phone
+                p_phone = clean_phone_number(matched_profile.get('Mobile Number')) if matched_profile is not None else clean_phone_number(cust_phone)
                 p_city = matched_profile.get('City Address', 'Kadi') if matched_profile is not None else 'Kadi'
                 p_serv = matched_profile.get('Primary Service', 'General') if matched_profile is not None else 'General'
                 st.markdown(f"""
@@ -834,11 +916,12 @@ elif menu == "🧾 Generate Bill / Voucher":
 
         if st.button("💾 Generate Bill & Save to Cloud", type="primary", use_container_width=True):
             if cust_name and total_bill > 0 and s1:
-                GSheetsManager.sync_customer(cust_name, cust_phone, s1, remarks)
+                clean_phone_val = clean_phone_number(cust_phone)
+                GSheetsManager.sync_customer(cust_name, clean_phone_val, s1, remarks)
                 
                 GSheetsManager.append_row("Invoices_Archive", {
                     "Invoice No": bill_no, "Date": bill_date, "Customer Name": cust_name.strip(),
-                    "Mobile Number": str(cust_phone).strip(), "Service 1": s1, "Amount 1": amt1,
+                    "Mobile Number": clean_phone_val, "Service 1": s1, "Amount 1": amt1,
                     "Service 2": s2, "Amount 2": amt2, "Total Amount": total_bill,
                     "Paid Amount": rec_amt, "Pending Amount": baki_amt, "Payment Mode": pay_mode, "Remarks": remarks
                 })
@@ -847,28 +930,44 @@ elif menu == "🧾 Generate Bill / Voucher":
                     GSheetsManager.append_row("Income", {
                         "Date": bill_date, "Customer Person": cust_name.strip(),
                         "Work Details": f"Bill #{bill_no}: {item_desc}", "Amount": rec_amt,
-                        "Payment Mode": pay_mode, "Notes": f"Mob: {cust_phone}"
+                        "Payment Mode": pay_mode, "Notes": f"Mob: {clean_phone_val}"
                     })
                 
                 if baki_amt > 0:
                     GSheetsManager.append_row("Udhar_Baki", {
                         "Date": bill_date, "Customer Name": cust_name.strip(),
-                        "Mobile Number": str(cust_phone).strip(), "Service Details": item_desc,
+                        "Mobile Number": clean_phone_val, "Service Details": item_desc,
                         "Total Amount": total_bill, "Paid Amount": rec_amt,
                         "Pending Amount": baki_amt, "Due Date": due_date, "Status": "Pending"
                     })
                 
-                pdf_data = generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks)
+                pdf_data = generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, clean_phone_val, s1, amt1, s2, amt2, total_bill, rec_amt, baki_amt, pay_mode, remarks)
                 col_dwn, col_wa = st.columns(2)
                 col_dwn.download_button("📥 Download PDF Invoice", data=pdf_data, file_name=f"Invoice_{cust_name}_{bill_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
                 
-                wa_msg = f"🧾 *TAX INVOICE*\n🏢 *{COMPANY_NAME}*\n📄 *Invoice No:* {bill_no}\n📅 *Date:* {bill_date}\n👤 *Customer:* {cust_name}\n💼 *Service:* {item_desc}\n💰 *Total:* Rs. {total_bill:,.2f}\n✅ *Paid:* Rs. {rec_amt:,.2f} ({pay_mode})\n"
+                upi_pay_link = f"upi://pay?pa={UPI_ID}&pn={urllib.parse.quote(UPI_PAYEE_NAME)}&am={baki_amt:.2f}&cu=INR"
+                
+                wa_msg = (
+                    f"🧾 *TAX INVOICE / RECEIPT*\n"
+                    f"🏢 *{COMPANY_NAME}*\n"
+                    f"📄 *Invoice No:* {bill_no}\n"
+                    f"📅 *Date:* {bill_date}\n"
+                    f"👤 *Customer:* {cust_name}\n"
+                    f"💼 *Service:* {item_desc}\n"
+                    f"💰 *Total:* Rs. {total_bill:,.2f}\n"
+                    f"✅ *Paid:* Rs. {rec_amt:,.2f} ({pay_mode})\n"
+                )
                 if baki_amt > 0:
-                    wa_msg += f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n"
+                    wa_msg += (
+                        f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n\n"
+                        f"💳 *Pay Online via UPI:* `{UPI_ID}`\n"
+                        f"📲 *Click to Pay:* {upi_pay_link}\n\n"
+                    )
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
                 
-                wa_url = f"https://wa.me/91{str(cust_phone).strip()}?text={urllib.parse.quote(wa_msg)}"
-                col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
+                if clean_phone_val and len(clean_phone_val) >= 10:
+                    wa_url = f"https://wa.me/91{clean_phone_val}?text={urllib.parse.quote(wa_msg)}"
+                    col_wa.markdown(f'<a href="{wa_url}" target="_blank"><button style="width:100%; height:45px; background-color:#25D366; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">📲 Send Invoice via WhatsApp</button></a>', unsafe_allow_html=True)
                 st.success("✅ Bill Created & Saved to Google Sheets!")
             else:
                 st.error("Please enter customer name, valid service, and bill amount.")
@@ -892,7 +991,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     up_cname = ed_c2.text_input("Customer Name", str(inv_row.get("Customer Name", "")))
                     
                     ed_c3, ed_c4 = st.columns(2)
-                    up_cphone = ed_c3.text_input("Mobile Number", str(inv_row.get("Mobile Number", "")))
+                    up_cphone = ed_c3.text_input("Mobile Number", clean_phone_number(inv_row.get("Mobile Number", "")))
                     up_s1 = ed_c4.text_input("Service 1", str(inv_row.get("Service 1", "")))
                     
                     ed_c5, ed_c6 = st.columns(2)
@@ -920,7 +1019,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                             GSheetsManager.update_invoice(sel_inv_no, {
                                 "Date": str(up_date),
                                 "Customer Name": str(up_cname),
-                                "Mobile Number": str(up_cphone).strip(),
+                                "Mobile Number": clean_phone_number(up_cphone),
                                 "Service 1": str(up_s1),
                                 "Amount 1": float(up_amt1),
                                 "Service 2": str(up_s2),
@@ -952,7 +1051,7 @@ elif menu == "🧾 Generate Bill / Voucher":
             sel_inv = st.selectbox("Select Invoice:", [f"{r['Invoice No']} - {r['Customer Name']} ({format_to_ddmmyyyy(r['Date'])})" for _, r in df_arch.iterrows()])
             sel_no = sel_inv.split(" - ")[0]
             r = df_arch[df_arch["Invoice No"] == sel_no].iloc[0]
-            re_pdf = generate_invoice_pdf_buffer(str(r["Invoice No"]), str(r["Date"]), str(r["Customer Name"]), str(r["Mobile Number"]), str(r.get("Service 1", "")), float(r.get("Amount 1", 0)), str(r.get("Service 2", "")), float(r.get("Amount 2", 0)), float(r["Total Amount"]), float(r.get("Paid Amount", 0)), float(r.get("Pending Amount", 0)), str(r.get("Payment Mode", "")), str(r.get("Remarks", "")))
+            re_pdf = generate_invoice_pdf_buffer(str(r["Invoice No"]), str(r["Date"]), str(r["Customer Name"]), clean_phone_number(r["Mobile Number"]), str(r.get("Service 1", "")), float(r.get("Amount 1", 0)), str(r.get("Service 2", "")), float(r.get("Amount 2", 0)), float(r["Total Amount"]), float(r.get("Paid Amount", 0)), float(r.get("Pending Amount", 0)), str(r.get("Payment Mode", "")), str(r.get("Remarks", "")))
             st.download_button("🖨️ Re-Download PDF", data=re_pdf, file_name=f"Invoice_{sel_no}.pdf", mime="application/pdf", type="primary", use_container_width=True)
         else:
             st.info("No invoices found.")
@@ -1086,7 +1185,7 @@ elif menu == "📋 Due Collections":
             if not due_records_clean.empty:
                 due_id_list = due_records_clean["ID"].tolist()
                 due_display_list = [
-                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({str(r.get('Mobile Number', ''))}) | Pending: ₹{r.get('Pending Amount', 0)}" 
+                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({clean_phone_number(r.get('Mobile Number', ''))}) | Pending: ₹{r.get('Pending Amount', 0)}" 
                     for _, r in due_records_clean.iterrows()
                 ]
                 
@@ -1101,7 +1200,7 @@ elif menu == "📋 Due Collections":
                     up_d_name = dc2.text_input("Customer Name", str(due_r.get("Customer Name", "")), key=f"d_nm_{sel_due_id}")
                     
                     dc3, dc4 = st.columns(2)
-                    up_d_phone = dc3.text_input("Mobile Number", str(due_r.get("Mobile Number", "")), key=f"d_ph_{sel_due_id}")
+                    up_d_phone = dc3.text_input("Mobile Number", clean_phone_number(due_r.get("Mobile Number", "")), key=f"d_ph_{sel_due_id}")
                     up_d_serv = dc4.text_input("Service Details", str(due_r.get("Service Details", "Service")), key=f"d_sv_{sel_due_id}")
                     
                     dc5, dc6 = st.columns(2)
@@ -1124,7 +1223,7 @@ elif menu == "📋 Due Collections":
                         if due_auth_pin == GSheetsManager.get_pin():
                             GSheetsManager.update_row("Udhar_Baki", sel_due_id, {
                                 "Date": str(up_d_date), "Customer Name": str(up_d_name),
-                                "Mobile Number": str(up_d_phone).strip(), "Service Details": str(up_d_serv),
+                                "Mobile Number": clean_phone_number(up_d_phone), "Service Details": str(up_d_serv),
                                 "Total Amount": float(up_d_tot), "Paid Amount": float(up_d_paid),
                                 "Pending Amount": float(up_d_pending), "Due Date": str(up_d_due_dt), "Status": str(up_d_stat)
                             })
@@ -1306,7 +1405,7 @@ elif menu == "📄 Reports & PDF":
                     d_rows.append([
                         Paragraph(format_to_ddmmyyyy(r.get("Date", "-")), tbl_text),
                         Paragraph(str(r.get("Customer Name", "-")), tbl_text),
-                        Paragraph(str(r.get("Mobile Number", "-")), tbl_text),
+                        Paragraph(clean_phone_number(r.get("Mobile Number", "-")), tbl_text),
                         Paragraph(str(r.get("Service Details", "Service")), tbl_text),
                         Paragraph(f"{float(pd.to_numeric(r.get('Total Amount', 0), errors='coerce')):,.2f}", tbl_text),
                         Paragraph(f"{float(pd.to_numeric(r.get('Paid Amount', 0), errors='coerce')):,.2f}", tbl_text),
@@ -1383,7 +1482,7 @@ elif menu == "👥 Customers Directory":
             if st.form_submit_button("💾 Save Client Profile", use_container_width=True):
                 if cn and cp:
                     df_c = GSheetsManager.get_df("Customers")
-                    clean_phone = str(cp).strip()
+                    clean_phone = clean_phone_number(cp)
                     if not df_c.empty and "Mobile Number" in df_c.columns and clean_phone in df_c["Mobile Number"].astype(str).values:
                         st.warning(f"⚠️ A customer with mobile {clean_phone} already exists in records!")
                     else:
@@ -1420,7 +1519,7 @@ elif menu == "👥 Customers Directory":
             if not clean_cust_rows.empty:
                 cust_ids = clean_cust_rows["ID"].tolist()
                 cust_labels = [
-                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({str(r.get('Mobile Number', ''))})" 
+                    f"ID #{r['ID']} - {str(r.get('Customer Name', ''))} ({clean_phone_number(r.get('Mobile Number', ''))})" 
                     for _, r in clean_cust_rows.iterrows()
                 ]
                 
@@ -1437,7 +1536,7 @@ elif menu == "👥 Customers Directory":
                 with st.expander(f"📝 Edit Client Profile #{sel_c_id} - {c_row.get('Customer Name', '')}", expanded=True):
                     ec1, ec2 = st.columns(2)
                     u_cname = ec1.text_input("Customer Name *", str(c_row.get("Customer Name", "")))
-                    u_cphone = ec2.text_input("Mobile Number *", str(c_row.get("Mobile Number", "")))
+                    u_cphone = ec2.text_input("Mobile Number *", clean_phone_number(c_row.get("Mobile Number", "")))
                     
                     ec3, ec4 = st.columns(2)
                     u_caddr = ec3.text_input("Address / City / Village", str(c_row.get("City Address", "Kadi")) if pd.notna(c_row.get("City Address")) else "Kadi")
@@ -1455,7 +1554,7 @@ elif menu == "👥 Customers Directory":
                     if b_col1.button("🔄 Update Customer Details", key=f"btn_up_{sel_c_id}", use_container_width=True):
                         if edit_pin == GSheetsManager.get_pin():
                             GSheetsManager.update_row("Customers", sel_c_id, {
-                                "Customer Name": str(u_cname), "Mobile Number": str(u_cphone).strip(),
+                                "Customer Name": str(u_cname), "Mobile Number": clean_phone_number(u_cphone),
                                 "City Address": str(u_caddr), "Primary Service": str(u_cserv), "Notes": str(u_cnotes)
                             })
                             st.success("Client profile updated successfully in Google Sheets!")
@@ -1491,7 +1590,7 @@ elif menu == "👥 Customers Directory":
             
             st.markdown("##### 📲 Click to Send WhatsApp Directly:")
             for _, prow in target_df.head(25).iterrows():
-                p_phone = str(prow.get("Mobile Number", "")).replace(".0", "").strip()
+                p_phone = clean_phone_number(prow.get("Mobile Number", ""))
                 p_name = prow.get("Customer Name", "Client")
                 p_city = prow.get("City Address", "Kadi")
                 if p_phone and len(p_phone) >= 10:
