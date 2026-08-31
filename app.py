@@ -18,8 +18,8 @@ COMPANY_MOBILE = "7698564672 / 9714776364"
 COMPANY_TAGLINE = "Visa Consultancy | Insurance & Land Advisor | Property Solution | Daily Accounting"
 
 # Official Payment Details
-UPI_ID = "7698564672@upi"
 PAYMENT_MOBILE = "7698564672"
+UPI_ID = "7698564672@upi"
 
 # Image File Names
 LOGO_VISA = "HARI OM.jpg"
@@ -104,6 +104,7 @@ DEFAULT_SCHEMAS = {
     "Expense": ["ID", "Date", "Expense Name", "Amount", "Payment Mode", "Notes"],
     "Udhar_Baki": ["ID", "Date", "Customer Name", "Mobile Number", "Service Details", "Total Amount", "Paid Amount", "Pending Amount", "Due Date", "Status"],
     "Task_Reminder": ["ID", "Date", "Time", "Person Name", "Mobile", "Task Details", "Status"],
+    "Day_Closing": ["ID", "Date", "System Cash", "Counted Cash", "Difference", "Notes 500", "Notes 200", "Notes 100", "Notes 50", "Notes 20", "Notes 10", "Coins", "Status"],
     "Settings": ["Setting Key", "Setting Value", "Updated Date"]
 }
 
@@ -151,7 +152,7 @@ class GSheetsManager:
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
                     
                     for c in df.columns:
-                        if c != "ID" and not ("Amount" in c or "Balance" in c):
+                        if c != "ID" and not ("Amount" in c or "Balance" in c or "Cash" in c or "Notes" in c or "Coins" in c):
                             df[c] = df[c].astype(object)
                     
                     if "Mobile Number" in df.columns:
@@ -433,6 +434,7 @@ if "current_page" not in st.session_state:
 st.sidebar.markdown("<h4 style='color:#1E3A8A;'>📌 Navigation Menu</h4>", unsafe_allow_html=True)
 menu_items = [
     ("📊 Dashboard", "Business metrics & live cash/bank summary"),
+    ("🌅 Day Closing", "Cash Tally & Denomination 10 to 500"),
     ("⏰ Task Reminders", "Calendar & Clock Reminders"),
     ("🧾 Generate Bill / Voucher", "Create, Edit, Print Invoices & Vouchers"),
     ("📋 Due Collections", "Customer Pending Dues & Edit Records"),
@@ -549,9 +551,8 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     elems.append(t_items)
     elems.append(Spacer(1, 12))
     
-    # Online Payment Box in PDF Bill (If balance due)
     if baki_amt > 0:
-        upi_info = Paragraph(f"<b>Online Payment Details (GPay / PhonePe / Paytm / BHIM):</b><br/>Mobile No: <b>{PAYMENT_MOBILE}</b> | UPI ID: <b>{UPI_ID}</b><br/>Pending Balance: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
+        upi_info = Paragraph(f"<b>Online Payment Details:</b><br/>GPay / PhonePe / Paytm Number: <b>{PAYMENT_MOBILE}</b><br/>UPI ID: <b>{UPI_ID}</b><br/>Pending Balance: <b>Rs. {baki_amt:,.2f}</b>", styles['Normal'])
         t_upi = Table([[upi_info]], colWidths=[550])
         t_upi.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F1F5F9")), ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E1")), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
         elems.append(t_upi)
@@ -565,9 +566,9 @@ def generate_invoice_pdf_buffer(bill_no, bill_date, cust_name, cust_phone, servi
     buf.seek(0)
     return buf
 
-# ----------------- 1. DASHBOARD (LIVE CASH & BANK SEPARATION) -----------------
+# ----------------- 1. DASHBOARD (LIVE CASH/BANK + THIS MONTH METRICS) -----------------
 if menu == "📊 Dashboard":
-    st.subheader("📊 Business Overview & Live Balances (Google Sheets)")
+    st.subheader("📊 Business Overview & Live Balances")
     
     # Active Reminders
     df_rem_all = GSheetsManager.get_df("Task_Reminder")
@@ -602,12 +603,15 @@ if menu == "📊 Dashboard":
     df_exp = GSheetsManager.get_df("Expense")
     df_baki = GSheetsManager.get_df("Udhar_Baki")
     df_cust = GSheetsManager.get_df("Customers")
-    today_str = datetime.now().strftime("%d/%m/%Y")
     
-    # Mode-wise Income Separation
-    cash_inc_total = 0.0
-    bank_inc_total = 0.0
-    today_inc_total = 0.0
+    today_dt = datetime.now()
+    today_str = today_dt.strftime("%d/%m/%Y")
+    curr_month = today_dt.month
+    curr_year = today_dt.year
+    
+    # Mode-wise & Period-wise Income
+    cash_inc_total, bank_inc_total = 0.0, 0.0
+    today_inc_total, month_inc_total = 0.0, 0.0
     
     if not df_inc.empty and "Amount" in df_inc.columns:
         df_inc["Amount_Num"] = pd.to_numeric(df_inc["Amount"], errors='coerce').fillna(0.0)
@@ -618,11 +622,12 @@ if menu == "📊 Dashboard":
         
         if "Date" in df_inc.columns:
             today_inc_total = df_inc[df_inc["Date"] == today_str]["Amount_Num"].sum()
+            df_inc["_dt"] = df_inc["Date"].apply(parse_date_safely)
+            month_inc_total = df_inc[(df_inc["_dt"].apply(lambda d: d.month == curr_month and d.year == curr_year))]["Amount_Num"].sum()
 
-    # Mode-wise Expense Separation
-    cash_exp_total = 0.0
-    bank_exp_total = 0.0
-    today_exp_total = 0.0
+    # Mode-wise & Period-wise Expense
+    cash_exp_total, bank_exp_total = 0.0, 0.0
+    today_exp_total, month_exp_total = 0.0, 0.0
     
     if not df_exp.empty and "Amount" in df_exp.columns:
         df_exp["Amount_Num"] = pd.to_numeric(df_exp["Amount"], errors='coerce').fillna(0.0)
@@ -639,6 +644,8 @@ if menu == "📊 Dashboard":
         
         if "Date" in df_exp.columns:
             today_exp_total = df_exp[df_exp["Date"] == today_str]["Amount_Num"].sum()
+            df_exp["_dt"] = df_exp["Date"].apply(parse_date_safely)
+            month_exp_total = df_exp[(df_exp["_dt"].apply(lambda d: d.month == curr_month and d.year == curr_year))]["Amount_Num"].sum()
 
     total_inc = cash_inc_total + bank_inc_total
     total_exp = cash_exp_total + bank_exp_total
@@ -678,35 +685,43 @@ if menu == "📊 Dashboard":
             </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("#### 📈 Revenue & Activity Summary")
+    st.markdown(f"#### 📈 Month ({today_dt.strftime('%B %Y')}) & Overall Performance")
     r2_c1, r2_c2, r2_c3 = st.columns(3)
     with r2_c1:
         st.markdown(f"""
             <div class="kpi-card" style="border-left: 5px solid #059669;">
-                <div class="kpi-label">💰 Total Revenue (Income)</div>
-                <div class="kpi-value" style="color: #047857;">₹ {total_inc:,.2f}</div>
-                <div class="kpi-sub">Cash: ₹ {cash_inc_total:,.0f} | Online: ₹ {bank_inc_total:,.0f} (Today: ₹ {today_inc_total:,.0f})</div>
+                <div class="kpi-label">💰 This Month Revenue (આ મહિનો)</div>
+                <div class="kpi-value" style="color: #047857;">₹ {month_inc_total:,.2f}</div>
+                <div class="kpi-sub">All-Time Revenue: ₹ {total_inc:,.2f} | Today: ₹ {today_inc_total:,.2f}</div>
             </div>
         """, unsafe_allow_html=True)
     with r2_c2:
         st.markdown(f"""
             <div class="kpi-card" style="border-left: 5px solid #DC2626;">
-                <div class="kpi-label">💸 Total Expenses (ખર્ચ)</div>
-                <div class="kpi-value" style="color: #DC2626;">₹ {total_exp:,.2f}</div>
-                <div class="kpi-sub">Cash: ₹ {cash_exp_total:,.0f} | Online: ₹ {bank_exp_total:,.0f} (Today: ₹ {today_exp_total:,.0f})</div>
+                <div class="kpi-label">💸 This Month Expense (આ મહિનો)</div>
+                <div class="kpi-value" style="color: #DC2626;">₹ {month_exp_total:,.2f}</div>
+                <div class="kpi-sub">All-Time Expense: ₹ {total_exp:,.2f} | Today: ₹ {today_exp_total:,.2f}</div>
             </div>
         """, unsafe_allow_html=True)
     with r2_c3:
         st.markdown(f"""
             <div class="kpi-card" style="border-left: 5px solid #D97706;">
-                <div class="kpi-label">📋 Total Pending Dues</div>
+                <div class="kpi-label">📋 Pending Dues & Clients</div>
                 <div class="kpi-value" style="color: #B45309;">₹ {total_baki:,.2f}</div>
-                <div class="kpi-sub">Clients Count: {total_cust} registered</div>
+                <div class="kpi-sub">Total Registered Clients: {total_cust}</div>
             </div>
         """, unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("📋 Pending Collections & WhatsApp Reminders")
+    
+    # Quick Action to Day Closing
+    dash_col_h, dash_col_btn = st.columns([3.5, 1.5])
+    with dash_col_h:
+        st.subheader("📋 Pending Collections & WhatsApp Reminders")
+    with dash_col_btn:
+        if st.button("🌅 Go to Day Closing", type="primary", use_container_width=True):
+            st.session_state.current_page = "🌅 Day Closing"
+            st.rerun()
 
     if not df_baki.empty and "Pending Amount" in df_baki.columns:
         pending = df_baki[pd.to_numeric(df_baki["Pending Amount"], errors='coerce') > 0]
@@ -724,15 +739,15 @@ if menu == "📊 Dashboard":
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
                 
-                # Professional WhatsApp Message with Mobile No & UPI ID for Payment
+                # WhatsApp Message with Mobile Number & UPI
                 msg = (
                     f"🙏 *નમસ્તે {r.get('Customer Name')}*,\n\n"
                     f"🏢 *{COMPANY_NAME}*\n"
                     f"📌 *વિગત:* {serv_name}\n"
                     f"💰 *બાકી રકમ (Pending Due):* ₹ {due_val:,.2f}\n"
                     f"📅 *તારીખ:* {format_to_ddmmyyyy(r.get('Due Date'))}\n\n"
-                    f"💳 *GPay / PhonePe / BHIM UPI પેમેન્ટ માટે:*\n"
-                    f"👉 *મોબાઈલ નંબર:* `{PAYMENT_MOBILE}`\n"
+                    f"💳 *ઓનલાઇન પેમેન્ટ કરવા માટે:*\n"
+                    f"👉 *GPay / PhonePe / Paytm:* `{PAYMENT_MOBILE}`\n"
                     f"👉 *UPI ID:* `{UPI_ID}`\n\n"
                     f"📞 *સંપર્ક:* {COMPANY_MOBILE}\n"
                     f"આભાર!"
@@ -746,7 +761,114 @@ if menu == "📊 Dashboard":
         else:
             st.success("All customer accounts clear!")
 
-# ----------------- 2. TASK REMINDERS -----------------
+# ----------------- 2. DAY CLOSING (10 TO 500 NOTE CALCULATOR) -----------------
+elif menu == "🌅 Day Closing":
+    st.subheader("🌅 Daily Cash Closing & Denomination Calculator (10 to 500)")
+    
+    df_inc = GSheetsManager.get_df("Income")
+    df_exp = GSheetsManager.get_df("Expense")
+    cash_op, bank_op = GSheetsManager.get_opening_balance()
+    
+    # Calculate Live Expected Cash in Drawer
+    cash_inc_total = 0.0
+    if not df_inc.empty and "Amount" in df_inc.columns:
+        df_inc["Amount_Num"] = pd.to_numeric(df_inc["Amount"], errors='coerce').fillna(0.0)
+        mode_col = df_inc["Payment Mode"].astype(str).str.lower() if "Payment Mode" in df_inc.columns else pd.Series(["cash"]*len(df_inc))
+        cash_inc_total = df_inc[mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+
+    cash_exp_total = 0.0
+    if not df_exp.empty and "Amount" in df_exp.columns:
+        df_exp["Amount_Num"] = pd.to_numeric(df_exp["Amount"], errors='coerce').fillna(0.0)
+        if "Payment Mode" in df_exp.columns:
+            exp_mode_col = df_exp["Payment Mode"].astype(str).str.lower()
+        elif "Notes" in df_exp.columns:
+            exp_mode_col = df_exp["Notes"].astype(str).str.lower()
+        else:
+            exp_mode_col = pd.Series(["cash"]*len(df_exp))
+        cash_exp_total = df_exp[exp_mode_col.str.contains("cash", na=False)]["Amount_Num"].sum()
+
+    expected_system_cash = cash_op + cash_inc_total - cash_exp_total
+    
+    tab_close_now, tab_closing_history = st.tabs(["💵 Count Today's Cash & Close", "📜 Day Closing History"])
+    
+    with tab_close_now:
+        st.markdown(f"""
+            <div style="background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px;">
+                <h4 style="margin: 0; color: #1E40AF;">📊 System Expected Cash in Hand (ગલ્લા મુજબ હિસાબ): ₹ {expected_system_cash:,.2f}</h4>
+                <p style="margin: 4px 0 0 0; color: #3B82F6; font-size: 13px;">નીચે ગલ્લામાં રહેલી નોટોની સંખ્યા નાખો. સિસ્ટમ આપોઆપ મેળ મેળવી લેશે.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        c_date = st.date_input("Closing Date", datetime.now(), format="DD/MM/YYYY").strftime("%d/%m/%Y")
+        
+        st.markdown("##### 🔢 Cash Denominations (નોટોની ગણતરી):")
+        
+        col_n1, col_n2 = st.columns(2)
+        with col_n1:
+            n500 = st.number_input("₹ 500 ની નોટ (Count)", min_value=0, step=1, value=0)
+            n200 = st.number_input("₹ 200 ની નોટ (Count)", min_value=0, step=1, value=0)
+            n100 = st.number_input("₹ 100 ની નોટ (Count)", min_value=0, step=1, value=0)
+        with col_n2:
+            n50 = st.number_input("₹ 50 ની નોટ (Count)", min_value=0, step=1, value=0)
+            n20 = st.number_input("₹ 20 ની નોટ (Count)", min_value=0, step=1, value=0)
+            n10 = st.number_input("₹ 10 ની નોટ (Count)", min_value=0, step=1, value=0)
+        
+        coins_total = st.number_input("કુલ સિક્કા (Coins Amount ₹)", min_value=0.0, step=1.0, value=0.0)
+        
+        # Calculate Physical Cash
+        tot_500 = n500 * 500
+        tot_200 = n200 * 200
+        tot_100 = n100 * 100
+        tot_50 = n50 * 50
+        tot_20 = n20 * 20
+        tot_10 = n10 * 10
+        
+        total_counted_cash = tot_500 + tot_200 + tot_100 + tot_50 + tot_20 + tot_10 + coins_total
+        difference = total_counted_cash - expected_system_cash
+        
+        st.divider()
+        st.markdown("##### 🧾 Closing Summary & Cash Tally:")
+        
+        c_sum1, c_sum2, c_sum3 = st.columns(3)
+        c_sum1.metric("1. ગણેલી રોકડ (Counted Cash)", f"₹ {total_counted_cash:,.2f}")
+        c_sum2.metric("2. સિસ્ટમ રોકડ (System Cash)", f"₹ {expected_system_cash:,.2f}")
+        
+        if difference == 0:
+            c_sum3.metric("3. તફાવત (Difference)", "₹ 0.00", delta="✅ હિસાબ પરફેક્ટ મળી ગયો!")
+        elif difference > 0:
+            c_sum3.metric("3. તફાવત (Difference)", f"+₹ {difference:,.2f}", delta="⚠️ રોકડ વધુ છે (Surplus)")
+        else:
+            c_sum3.metric("3. તફાવત (Difference)", f"-₹ {abs(difference):,.2f}", delta="⚠️ રોકડ ઓછી છે (Shortage)", delta_color="inverse")
+            
+        closing_notes = st.text_input("Remarks / Closing Notes", "Daily cash tallied and verified.")
+        
+        if st.button("💾 Submit & Save Day Closing", type="primary", use_container_width=True):
+            status_tag = "Matched" if difference == 0 else ("Excess Cash" if difference > 0 else "Shortage Cash")
+            GSheetsManager.append_row("Day_Closing", {
+                "Date": c_date,
+                "System Cash": float(expected_system_cash),
+                "Counted Cash": float(total_counted_cash),
+                "Difference": float(difference),
+                "Notes 500": int(n500),
+                "Notes 200": int(n200),
+                "Notes 100": int(n100),
+                "Notes 50": int(n50),
+                "Notes 20": int(n20),
+                "Notes 10": int(n10),
+                "Coins": float(coins_total),
+                "Status": f"{status_tag} - {closing_notes}"
+            })
+            st.success(f"✅ Day Closing for {c_date} Saved Successfully to Google Sheets!")
+            st.rerun()
+
+    with tab_closing_history:
+        df_dc = GSheetsManager.get_df("Day_Closing")
+        if not df_dc.empty:
+            st.dataframe(df_dc, use_container_width=True)
+        else:
+            st.info("No Day Closing history found yet.")
+
+# ----------------- 3. TASK REMINDERS -----------------
 elif menu == "⏰ Task Reminders":
     st.subheader("⏰ Reminders & Task Management")
     tab_new_task, tab_pending_tasks, tab_completed_tasks = st.tabs(["➕ Schedule New Reminder", "⏳ Active Tasks", "✅ Completed History"])
@@ -793,7 +915,7 @@ elif menu == "⏰ Task Reminders":
         if not df_rem.empty and "Status" in df_rem.columns:
             st.dataframe(df_rem[df_rem["Status"] == "Completed"], use_container_width=True)
 
-# ----------------- 3. INVOICE GENERATION -----------------
+# ----------------- 4. INVOICE GENERATION -----------------
 elif menu == "🧾 Generate Bill / Voucher":
     st.subheader("🧾 Generate, Edit & Manage Invoices / Vouchers (Cloud)")
     bill_type = st.radio("Select Action:", [
@@ -942,8 +1064,8 @@ elif menu == "🧾 Generate Bill / Voucher":
                 if baki_amt > 0:
                     wa_msg += (
                         f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n\n"
-                        f"💳 *GPay / PhonePe / BHIM UPI પેમેન્ટ માટે:*\n"
-                        f"👉 *મોબાઈલ નંબર:* `{PAYMENT_MOBILE}`\n"
+                        f"💳 *Online Payment Info:*\n"
+                        f"👉 *GPay / PhonePe / Paytm:* `{PAYMENT_MOBILE}`\n"
                         f"👉 *UPI ID:* `{UPI_ID}`\n\n"
                     )
                 wa_msg += f"📞 {COMPANY_MOBILE}\n🙏 *Thank you for your business!*"
@@ -1147,7 +1269,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                     st.success("Due Settled in Google Sheets!")
                     st.rerun()
 
-# ----------------- 4. DUE COLLECTIONS -----------------
+# ----------------- 5. DUE COLLECTIONS -----------------
 elif menu == "📋 Due Collections":
     st.subheader("📋 Due Collections & Credit Ledger Management (Cloud)")
     
@@ -1225,7 +1347,7 @@ elif menu == "📋 Due Collections":
         else:
             st.info("No due records found to edit.")
 
-# ----------------- 5. REPORTS & PDF -----------------
+# ----------------- 6. REPORTS & PDF -----------------
 elif menu == "📄 Reports & PDF":
     st.subheader("📄 Financial Reports & Statements")
     c1, c2 = st.columns(2)
@@ -1429,7 +1551,7 @@ elif menu == "📄 Reports & PDF":
     with t3:
         st.dataframe(f_b, use_container_width=True)
 
-# ----------------- 6. OPENING BALANCE -----------------
+# ----------------- 7. OPENING BALANCE -----------------
 elif menu == "🏦 Opening Balance":
     st.subheader("🏦 Opening Balance Setup (Google Sheets)")
     curr_c, curr_b = GSheetsManager.get_opening_balance()
@@ -1445,7 +1567,7 @@ elif menu == "🏦 Opening Balance":
         else:
             st.error("Invalid PIN!")
 
-# ----------------- 7. CUSTOMERS DIRECTORY -----------------
+# ----------------- 8. CUSTOMERS DIRECTORY -----------------
 elif menu == "👥 Customers Directory":
     st.subheader("👥 Client Directory & Broadcast (Cloud)")
     tab_new, tab_list, tab_promo = st.tabs(["➕ Add Client", "📋 Registered Clients (Edit/Delete)", "📢 Marketing / Broadcast List"])
@@ -1569,7 +1691,7 @@ elif menu == "👥 Customers Directory":
             display_cols = [c for c in ["Customer Name", "Mobile Number", "City Address", "Primary Service", "Notes"] if c in target_df.columns]
             st.dataframe(target_df[display_cols], use_container_width=True)
             
-            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nPayment Mobile No: {PAYMENT_MOBILE} | UPI ID: {UPI_ID}")
+            promo_msg = st.text_area("Broadcast Message Template:", value=f"Greetings from {COMPANY_NAME}! Contact us at {COMPANY_MOBILE} for special offers and updates regarding your service inquiry.\n\nPay via GPay/PhonePe: {PAYMENT_MOBILE} | UPI: {UPI_ID}")
             
             st.markdown("##### 📲 Click to Send WhatsApp Directly:")
             for _, prow in target_df.head(25).iterrows():
@@ -1582,7 +1704,7 @@ elif menu == "👥 Customers Directory":
         else:
             st.info("No client records available for marketing broadcast.")
 
-# ----------------- 8. INCOME & EXPENSE MANAGEMENT -----------------
+# ----------------- 9. INCOME & EXPENSE MANAGEMENT -----------------
 elif menu == "💰 Income":
     st.subheader("💰 Income Ledger (Google Sheets)")
     df_i = GSheetsManager.get_df("Income")
@@ -1595,14 +1717,14 @@ elif menu == "💸 Expenses":
     if not df_e.empty:
         st.dataframe(df_e, use_container_width=True)
 
-# ----------------- 9. CLOUD BACKUP -----------------
+# ----------------- 10. CLOUD BACKUP -----------------
 elif menu == "💾 Cloud Excel Backup":
     st.subheader("💾 Complete Data Export (Excel Workbook)")
     st.info("💡 Generate an offline Excel backup file (.xlsx) containing all Google Sheets data.")
     
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        for tbl in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Settings"]:
+        for tbl in ["Customers", "Invoices_Archive", "Income", "Expense", "Udhar_Baki", "Task_Reminder", "Day_Closing", "Settings"]:
             df = GSheetsManager.get_df(tbl)
             df.to_excel(writer, sheet_name=tbl, index=False)
     buf.seek(0)
@@ -1616,7 +1738,7 @@ elif menu == "💾 Cloud Excel Backup":
         use_container_width=True
     )
 
-# ----------------- 10. SECURITY PIN -----------------
+# ----------------- 11. SECURITY PIN -----------------
 elif menu == "⚙️ Security / Change PIN":
     st.subheader("⚙️ Change Master PIN")
     with st.form("pin_form"):
