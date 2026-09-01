@@ -146,13 +146,13 @@ class GSheetsManager:
     def get_df(sheet_name):
         if conn is not None:
             try:
-                df = conn.read(worksheet=sheet_name, ttl="30s")
+                df = conn.read(worksheet=sheet_name, ttl="10s")
                 if df is not None and not df.empty:
                     df = df.dropna(how="all")
                     df.columns = [str(c).replace('_', ' ').strip() for c in df.columns]
                     
                     for c in df.columns:
-                        if c != "ID" and not ("Amount" in c or "Balance" in c or "Cash" in c or "Notes" in c or "Coins" in c):
+                        if c != "ID" and not ("Amount" in c or "Balance" in c or "Cash" in c or "Notes" in c or "Coins" in c or "Difference" in c):
                             df[c] = df[c].astype(object)
                     
                     if "Mobile Number" in df.columns:
@@ -714,7 +714,6 @@ if menu == "📊 Dashboard":
 
     st.divider()
     
-    # Quick Action to Day Closing
     dash_col_h, dash_col_btn = st.columns([3.5, 1.5])
     with dash_col_h:
         st.subheader("📋 Pending Collections & WhatsApp Reminders")
@@ -739,7 +738,6 @@ if menu == "📊 Dashboard":
                 b4.write(f"Due: **₹ {due_val:,.2f}**")
                 b5.write(f"Date: {format_to_ddmmyyyy(r.get('Due Date'))}")
                 
-                # WhatsApp Message with Mobile Number & UPI
                 msg = (
                     f"🙏 *નમસ્તે {r.get('Customer Name')}*,\n\n"
                     f"🏢 *{COMPANY_NAME}*\n"
@@ -761,7 +759,7 @@ if menu == "📊 Dashboard":
         else:
             st.success("All customer accounts clear!")
 
-# ----------------- 2. DAY CLOSING (10 TO 500 NOTE CALCULATOR) -----------------
+# ----------------- 2. DAY CLOSING (NOTE CALCULATOR & FIX HISTORY) -----------------
 elif menu == "🌅 Day Closing":
     st.subheader("🌅 Daily Cash Closing & Denomination Calculator (10 to 500)")
     
@@ -769,7 +767,6 @@ elif menu == "🌅 Day Closing":
     df_exp = GSheetsManager.get_df("Expense")
     cash_op, bank_op = GSheetsManager.get_opening_balance()
     
-    # Calculate Live Expected Cash in Drawer
     cash_inc_total = 0.0
     if not df_inc.empty and "Amount" in df_inc.columns:
         df_inc["Amount_Num"] = pd.to_numeric(df_inc["Amount"], errors='coerce').fillna(0.0)
@@ -815,7 +812,6 @@ elif menu == "🌅 Day Closing":
         
         coins_total = st.number_input("કુલ સિક્કા (Coins Amount ₹)", min_value=0.0, step=1.0, value=0.0)
         
-        # Calculate Physical Cash
         tot_500 = n500 * 500
         tot_200 = n200 * 200
         tot_100 = n100 * 100
@@ -862,11 +858,47 @@ elif menu == "🌅 Day Closing":
             st.rerun()
 
     with tab_closing_history:
+        st.markdown("##### 📜 Historical Day Closing Records")
         df_dc = GSheetsManager.get_df("Day_Closing")
-        if not df_dc.empty:
+        if not df_dc.empty and len(df_dc.dropna(how="all")) > 0:
             st.dataframe(df_dc, use_container_width=True)
+            st.divider()
+            
+            # Record management for Day Closing
+            clean_dc = df_dc[df_dc["ID"].notna()].copy()
+            if not clean_dc.empty:
+                dc_ids = clean_dc["ID"].tolist()
+                dc_labels = [
+                    f"ID #{r['ID']} - Date: {format_to_ddmmyyyy(r.get('Date', ''))} | Counted: ₹{r.get('Counted Cash', 0)} | Diff: ₹{r.get('Difference', 0)}" 
+                    for _, r in clean_dc.iterrows()
+                ]
+                sel_dc_idx = st.selectbox("Select Day Closing Record to View/Delete:", range(len(dc_labels)), format_func=lambda i: dc_labels[i])
+                sel_dc_id = dc_ids[sel_dc_idx]
+                dc_row = clean_dc[clean_dc["ID"].astype(str).str.replace(r'\.0$', '', regex=True) == str(sel_dc_id).replace('.0', '')].iloc[0]
+                
+                with st.expander(f"🔎 Breakdown for Day Closing #{sel_dc_id} ({format_to_ddmmyyyy(dc_row.get('Date'))})", expanded=True):
+                    dcc1, dcc2, dcc3 = st.columns(3)
+                    dcc1.write(f"**Date:** {format_to_ddmmyyyy(dc_row.get('Date'))}")
+                    dcc1.write(f"**System Cash:** ₹ {pd.to_numeric(dc_row.get('System Cash', 0), errors='coerce'):,.2f}")
+                    dcc2.write(f"**Counted Cash:** ₹ {pd.to_numeric(dc_row.get('Counted Cash', 0), errors='coerce'):,.2f}")
+                    dcc2.write(f"**Difference:** ₹ {pd.to_numeric(dc_row.get('Difference', 0), errors='coerce'):,.2f}")
+                    dcc3.write(f"**Status:** {dc_row.get('Status', '-')}")
+                    
+                    st.markdown("**Denominations Counted:**")
+                    st.write(f"• ₹500: {dc_row.get('Notes 500', 0)} | • ₹200: {dc_row.get('Notes 200', 0)} | • ₹100: {dc_row.get('Notes 100', 0)}")
+                    st.write(f"• ₹50: {dc_row.get('Notes 50', 0)} | • ₹20: {dc_row.get('Notes 20', 0)} | • ₹10: {dc_row.get('Notes 10', 0)} | • Coins: ₹{dc_row.get('Coins', 0)}")
+                    
+                    st.markdown("🔒 **Delete Entry:**")
+                    del_dc_pin = st.text_input("Enter Security PIN to Delete Record:", type="password", key=f"dc_pin_{sel_dc_id}")
+                    if st.button("🗑️ Delete Day Closing Record", key=f"btn_del_dc_{sel_dc_id}", type="primary"):
+                        if del_dc_pin == GSheetsManager.get_pin():
+                            GSheetsManager.delete_row("Day_Closing", sel_dc_id)
+                            st.warning("Day Closing entry deleted!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Incorrect Security PIN!")
         else:
-            st.info("No Day Closing history found yet.")
+            st.info("No Day Closing history records found in Google Sheets.")
 
 # ----------------- 3. TASK REMINDERS -----------------
 elif menu == "⏰ Task Reminders":
@@ -1064,7 +1096,7 @@ elif menu == "🧾 Generate Bill / Voucher":
                 if baki_amt > 0:
                     wa_msg += (
                         f"⚠️ *Pending Due:* Rs. {baki_amt:,.2f} (Due: {due_date})\n\n"
-                        f"💳 *Online Payment Info:*\n"
+                        f"💳 *Online Payment Details:*\n"
                         f"👉 *GPay / PhonePe / Paytm:* `{PAYMENT_MOBILE}`\n"
                         f"👉 *UPI ID:* `{UPI_ID}`\n\n"
                     )
